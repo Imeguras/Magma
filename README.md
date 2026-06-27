@@ -1,9 +1,7 @@
 # Rocm's Magma!
-
 Tired of watching proprietary nvidia scooping up the computer vision scene, with proprietary frameworks like DeepStream? Watch as the rocm melts into streaming molten magma!
-To put it bluntly the idea is not doing **the whole compatibility and flexibility over performance**, the reason is well nvidia won't play ball so whats the point of making a software more complex, if the bigger fish reaps the rewards of deep optimization?
-
-Als
+To put it bluntly the idea is not doing **the whole compatibility and flexibility over performance**, the reason is: 
+If nvidia won't play ball so whats the point of making a software more complex, if the bigger fish reaps the rewards of deep optimization?
 
 ## AI Usage
 

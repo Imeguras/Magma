@@ -11,7 +11,8 @@ api_version = '1.0'
 
 gst_dep = dependency('gstreamer-1.0', version : '>=1.19', required : true, fallback : ['gstreamer', 'gst_dep'])
 gstbase_dep = dependency('gstreamer-base-1.0', version : '>=1.19', fallback : ['gstreamer', 'gst_base_dep'])
-# Fallback to manual detection if CMake gives a broken dependency
+gstvideo_dep = dependency('gstreamer-video-1.0', version : '>=1.19', fallback : ['gstreamer', 'gst_video_dep'])
+
 hip_dep = dependency('hip', required: true)
 hipconfig = find_program('hipconfig', required : true)
 
