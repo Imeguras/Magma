@@ -36,15 +36,20 @@ kernel_utils_dep = declare_dependency(
 # Plugin: mgminfer
 mgminfer_sources = [
   'src/mgminfer.cpp',
+  'src/magma-meta.cpp',
+  'src/magma-infer-meta.cpp',
 ]
 
 mgminfer_shlib = shared_library('mgminfer',
   mgminfer_sources,
   c_args: plugin_c_args,
-  cpp_args: ['-std=c++17'],
+  cpp_args: [
+    '-std=c++17',
+    '-DMAGMA_KERNEL_SRC_DIR="' + kernel_src_dir + '"',
+  ],
   include_directories: [inc, hip_inc],
   dependencies: [gst_dep, gstbase_dep, gstvideo_dep, gstallocators_dep,
-                 kernel_utils_dep],
+                 kernel_utils_dep, gbm_dep, drm_dep, hip_host_dep],
   install: true,
   install_dir: plugins_install_dir,
 )
@@ -86,8 +91,74 @@ mgmvideoconvert_shlib = shared_library('mgmvideoconvert',
 )
 
 # Install kernel sources for runtime JIT loading on deployed systems
-install_data('kernels/preproc_kernels.hip',
+install_data('kernels/preproc_kernels.hip', 'kernels/dummy_infer.hip',
   install_dir: get_option('datadir') / 'magma' / 'kernels',
 )
+
+# ========================================================
+# Optional: Protobuf message definition
+# ========================================================
+protoc = find_program('protoc', required: false)
+have_protobuf = protoc.found()
+protobuf_dep = dependency('protobuf', required: false)
+
+if have_protobuf and protobuf_dep.found()
+    magma_msg_pb = custom_target('magma_msg_pb',
+        input: 'magma_msg.proto',
+        output: ['magma_msg.pb.cc', 'magma_msg.pb.h'],
+        command: [protoc, '--cpp_out=@OUTDIR@', '--proto_path=@CURRENT_SOURCE_DIR@', '@INPUT@'],
+    )
+    magma_msg_lib = static_library('magma_msg_pb', magma_msg_pb,
+        cpp_args: ['-std=c++17'],
+        dependencies: protobuf_dep,
+    )
+    magma_msg_dep = declare_dependency(
+        link_with: magma_msg_lib,
+        sources: magma_msg_pb,
+    )
+    magma_msg_cpp_args = ['-DHAVE_PROTOBUF']
+else
+    magma_msg_dep = disabler()
+    magma_msg_cpp_args = []
+endif
+
+# ========================================================
+# Plugin: mgmserialize — serializes MagmaInferenceMeta → msg
+# ========================================================
+mgmserialize_sources = [
+  'src/mgmserialize.cpp',
+  'src/magma-infer-meta.cpp',
+]
+
+mgmserialize_shlib = shared_library('mgmserialize',
+  mgmserialize_sources,
+  c_args: plugin_c_args,
+  cpp_args: ['-std=c++17'] + magma_msg_cpp_args,
+  include_directories: [inc, hip_inc],
+  dependencies: [gst_dep, gstbase_dep, gstvideo_dep, gstallocators_dep,
+                 magma_msg_dep],
+  install: true,
+  install_dir: plugins_install_dir,
+)
+
+# ========================================================
+# Plugin: mgmkpublish — Kafka sink (conditional on librdkafka)
+# ========================================================
+rdkafka_dep = dependency('rdkafka', required: false)
+
+if rdkafka_dep.found()
+    mgmkpublish_sources = ['src/mgmkpublish.cpp']
+    mgmkpublish_shlib = shared_library('mgmkpublish',
+      mgmkpublish_sources,
+      c_args: plugin_c_args,
+      cpp_args: ['-std=c++17'],
+      include_directories: [inc],
+      dependencies: [gst_dep, gstbase_dep, gstallocators_dep, rdkafka_dep],
+      install: true,
+      install_dir: plugins_install_dir,
+    )
+else
+    mgmkpublish_shlib = disabler()
+endif
 
 subdir('tests')

@@ -1,5 +1,9 @@
 #Project-stuff
 build
+builddir 
+#vscode
+.vscode
+
 #AI-stuff
 graphify-out
 .claude

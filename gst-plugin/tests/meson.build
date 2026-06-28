@@ -4,9 +4,9 @@ gst_check_dep = dependency('gstreamer-check-1.0', required: true)
 # test-infer-object — MagmaInferObject CPU lifecycle
 # -----------------------------------------------------------
 test_infer_object = executable('test-infer-object',
-  ['test_infer_object.cpp', '../src/mgminfer.cpp'],
+  ['test_infer_object.cpp', '../src/magma-infer-meta.cpp'],
   cpp_args: ['-std=c++17'],
-  include_directories: [inc],
+  include_directories: [inc, hip_inc],
   dependencies: [gst_dep, gstbase_dep, gstvideo_dep, gstallocators_dep,
                  gst_check_dep],
 )
@@ -16,9 +16,9 @@ test('test-infer-object', test_infer_object)
 # test-inference-meta — MagmaInferenceMeta GstMeta API
 # -----------------------------------------------------------
 test_inference_meta = executable('test-inference-meta',
-  ['test_inference_meta.cpp', '../src/mgminfer.cpp'],
+  ['test_inference_meta.cpp', '../src/magma-infer-meta.cpp'],
   cpp_args: ['-std=c++17'],
-  include_directories: [inc],
+  include_directories: [inc, hip_inc],
   dependencies: [gst_dep, gstbase_dep, gstvideo_dep, gstallocators_dep,
                  gst_check_dep],
 )
@@ -37,7 +37,7 @@ test_properties = executable('test-properties',
     '-std=c++17',
     '-DTEST_PLUGIN_DIR="' + plugin_build_dir + '"',
   ],
-  include_directories: [inc],
+  include_directories: [inc, hip_inc],
   dependencies: [gst_dep],
 )
 test('test-properties', test_properties,
@@ -59,3 +59,56 @@ test_mgmpreproc_tensor = executable('test-mgmpreproc-tensor',
 )
 test('test-mgmpreproc-tensor', test_mgmpreproc_tensor,
   depends: [mgmpreproc_shlib])
+
+# -----------------------------------------------------------
+# test-mgminfer-tensor-pipe — mgminfer reads MagmaTensorMeta,
+# runs dummy kernel, attaches MagmaInferenceMeta (requires GPU)
+# Loads libmgminfer.so at runtime.
+# -----------------------------------------------------------
+test_mgminfer_tensor_pipe = executable('test-mgminfer-tensor-pipe',
+  'test_mgminfer_tensor_pipe.cpp',
+  cpp_args: [
+    '-std=c++17',
+    '-DTEST_PLUGIN_DIR="' + plugin_build_dir + '"',
+  ],
+  include_directories: [inc, hip_inc],
+  dependencies: [gst_dep, gstbase_dep, gstvideo_dep, gstallocators_dep,
+                 gst_check_dep, hip_host_dep, gbm_dep, drm_dep],
+)
+test('test-mgminfer-tensor-pipe', test_mgminfer_tensor_pipe,
+  depends: [mgminfer_shlib])
+
+# -----------------------------------------------------------
+# test-mgmserialize — serializes MagmaInferenceMeta → JSON/protobuf
+# Loads libmgmserialize.so at runtime.
+# -----------------------------------------------------------
+test_mgmserialize = executable('test-mgmserialize',
+  ['test_mgmserialize.cpp', '../src/magma-infer-meta.cpp'],
+  cpp_args: [
+    '-std=c++17',
+    '-DTEST_PLUGIN_DIR="' + plugin_build_dir + '"',
+  ],
+  include_directories: [inc, hip_inc],
+  dependencies: [gst_dep, gstbase_dep, gstvideo_dep, gstallocators_dep,
+                 gst_check_dep],
+)
+test('test-mgmserialize', test_mgmserialize,
+  depends: [mgmserialize_shlib])
+
+# -----------------------------------------------------------
+# test-mgmkpublish — Kafka sink element property I/O
+# Loads libmgmkpublish.so at runtime (conditional on rdkafka).
+# -----------------------------------------------------------
+if rdkafka_dep.found()
+    test_mgmkpublish = executable('test-mgmkpublish',
+      'test_mgmkpublish.cpp',
+      cpp_args: [
+        '-std=c++17',
+        '-DTEST_PLUGIN_DIR="' + plugin_build_dir + '"',
+      ],
+      include_directories: [inc],
+      dependencies: [gst_dep],
+    )
+    test('test-mgmkpublish', test_mgmkpublish,
+      depends: [mgmkpublish_shlib])
+endif

@@ -1,0 +1,19 @@
+syntax = "proto3";
+package magma;
+
+message Detection {
+    uint32 class_id = 1;
+    string label = 2;
+    float confidence = 3;
+    float x = 4;
+    float y = 5;
+    float width = 6;
+    float height = 7;
+}
+
+message FrameResult {
+    uint32 source_width = 1;
+    uint32 source_height = 2;
+    uint64 timestamp_ns = 3;
+    repeated Detection objects = 4;
+}
