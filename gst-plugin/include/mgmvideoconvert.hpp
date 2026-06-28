@@ -12,12 +12,7 @@ G_BEGIN_DECLS
 #define GST_TYPE_MAGMA_VIDEOCONVERT (gst_magma_videoconvert_get_type())
 
 G_DECLARE_FINAL_TYPE(
-    GstMagmaVideoConvert,
-    gst_magma_videoconvert,
-    GST,
-    MAGMA_VIDEOCONVERT,
-    GstBaseTransform
-)
+    GstMagmaVideoConvert, gst_magma_videoconvert, GST, MAGMA_VIDEOCONVERT, GstBaseTransform)
 
 struct _GstMagmaVideoConvert {
     GstBaseTransform parent;
@@ -31,8 +26,8 @@ struct _GstMagmaVideoConvert {
 
     // DRM/GBM state
     int drm_fd;
-    struct gbm_device *gbm_dev;
-    struct gbm_bo *gbm_bo;
+    struct gbm_device* gbm_dev;
+    struct gbm_bo* gbm_bo;
     guint gbm_stride;
 
     // HIP import of the GBM BO

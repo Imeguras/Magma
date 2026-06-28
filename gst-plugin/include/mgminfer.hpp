@@ -9,10 +9,8 @@ G_BEGIN_DECLS
 
 /* ---------- caps ---------- */
 
-#define INFER_SINK_CAPS \
-    "video/x-raw(memory:DMABuf),format=(string)NV12"
-#define INFER_SRC_CAPS \
-    "video/x-raw(memory:DMABuf),format=(string)NV12"
+#define INFER_SINK_CAPS "video/x-raw(memory:DMABuf),format=(string)NV12"
+#define INFER_SRC_CAPS "video/x-raw(memory:DMABuf),format=(string)NV12"
 
 /* ---------- GPU-side result structures ---------- */
 
@@ -22,9 +20,9 @@ G_BEGIN_DECLS
  * packed array so that GPU kernels can write results directly.
  */
 typedef struct {
-    guint   class_id;
-    gfloat  confidence;
-    gfloat  x, y, width, height;   /* normalised bounding box (0..1) */
+    guint class_id;
+    gfloat confidence;
+    gfloat x, y, width, height; /* normalised bounding box (0..1) */
 } MagmaInferObjectGPU;
 
 /**
@@ -33,10 +31,10 @@ typedef struct {
  */
 typedef struct _MagmaInferObject MagmaInferObject;
 struct _MagmaInferObject {
-    guint   class_id;
-    gchar  *label;          /* owned string, may be NULL */
-    gfloat  confidence;
-    gfloat  x, y, width, height;
+    guint class_id;
+    gchar* label; /* owned string, may be NULL */
+    gfloat confidence;
+    gfloat x, y, width, height;
 };
 
 /* ---------- inference metadata (attached to GstBuffer) ---------- */
@@ -53,62 +51,49 @@ typedef struct _MagmaInferenceMeta MagmaInferenceMeta;
  * when needed, or keep everything on GPU.
  */
 struct _MagmaInferenceMeta {
-    GstMeta  meta;
+    GstMeta meta;
 
-    guint    source_width;
-    guint    source_height;
+    guint source_width;
+    guint source_height;
 
     /* --- GPU-resident results --- */
 
-    guint       num_objects;     /* number of valid entries             */
-    GstMemory  *objects_gpu;    /* DMABuf with MagmaInferObjectGPU[]   */
+    guint num_objects;      /* number of valid entries             */
+    GstMemory* objects_gpu; /* DMABuf with MagmaInferObjectGPU[]   */
 
     /* --- Optional: raw output tensors (GPU memories) --- */
-    GPtrArray  *output_tensors; /* of GstMemory* (each a GPU DMABuf)   */
+    GPtrArray* output_tensors; /* of GstMemory* (each a GPU DMABuf)   */
 };
 
 /* --- metadata API --- */
 
 #define MAGMA_INFERENCE_META_API_TYPE (magma_inference_meta_api_get_type())
-#define magma_buffer_get_inference_meta(b) \
-    ((MagmaInferenceMeta*)gst_buffer_get_meta((b), MAGMA_INFERENCE_META_API_TYPE))
+#define magma_buffer_get_inference_meta(b) ((MagmaInferenceMeta*)gst_buffer_get_meta((b), MAGMA_INFERENCE_META_API_TYPE))
 
-GType               magma_inference_meta_api_get_type (void);
-const GstMetaInfo  *magma_inference_meta_get_info     (void);
-MagmaInferenceMeta *magma_buffer_add_inference_meta   (GstBuffer *buffer,
-                                                        guint      source_width,
-                                                        guint      source_height);
+GType magma_inference_meta_api_get_type(void);
+const GstMetaInfo* magma_inference_meta_get_info(void);
+MagmaInferenceMeta* magma_buffer_add_inference_meta(GstBuffer* buffer, guint source_width, guint source_height);
 
 /* CPU-side convenience helpers */
-MagmaInferObject   *magma_infer_object_new   (guint        class_id,
-                                               const gchar *label,
-                                               gfloat       confidence,
-                                               gfloat x, gfloat y,
-                                               gfloat w, gfloat h);
-void                magma_infer_object_free  (MagmaInferObject *obj);
+MagmaInferObject* magma_infer_object_new(guint class_id, const gchar* label, gfloat confidence, gfloat x, gfloat y, gfloat w, gfloat h);
+void magma_infer_object_free(MagmaInferObject* obj);
 
 /* ---------- element type ---------- */
 
 #define GST_TYPE_MAGMA_INFER (gst_magma_infer_get_type())
 
-G_DECLARE_FINAL_TYPE(
-    GstMagmaInfer,
-    gst_magma_infer,
-    GST,
-    MAGMA_INFER,
-    GstBaseTransform
-)
+G_DECLARE_FINAL_TYPE(GstMagmaInfer, gst_magma_infer, GST, MAGMA_INFER, GstBaseTransform)
 
 struct _GstMagmaInfer {
     GstBaseTransform parent;
 
-    gchar  *model_path;
+    gchar* model_path;
 
-    guint   inference_interval;
-    guint   frame_counter;
+    guint inference_interval;
+    guint frame_counter;
 
-    gint    in_width;
-    gint    in_height;
+    gint in_width;
+    gint in_height;
 };
 
 G_END_DECLS

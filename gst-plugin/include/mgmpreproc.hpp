@@ -5,19 +5,12 @@
 #include <gst/base/gstbasetransform.h>
 #include <gst/allocators/gstdmabuf.h>
 #include <hip/hip_runtime.h>
-#include <hip/hiprtc.h>
 
 G_BEGIN_DECLS
 
 #define GST_TYPE_MAGMA_PREPROC (gst_magma_preproc_get_type())
 
-G_DECLARE_FINAL_TYPE(
-    GstMagmaPreproc,
-    gst_magma_preproc,
-    GST,
-    MAGMA_PREPROC,
-    GstBaseTransform
-)
+G_DECLARE_FINAL_TYPE(GstMagmaPreproc, gst_magma_preproc, GST, MAGMA_PREPROC, GstBaseTransform)
 
 struct _GstMagmaPreproc {
     GstBaseTransform parent;
@@ -32,17 +25,25 @@ struct _GstMagmaPreproc {
 
     hipStream_t hip_stream;
 
-    // imported DMABUF
+    // imported DMABUF (input NV12)
     hipExternalMemory_t external_memory;
     hipDeviceptr_t d_image;
 
-    // compiled GPU kernel
+    // compiled GPU module
     hipModule_t kernel_module;
-    hipFunction_t kernel_func;
+    hipFunction_t kernel_nv12_to_rgb;
     gboolean kernel_ready;
 
-    // tensor output
+    // tensor output — backed by DMABuf for zero-copy
+    int drm_fd;
+    struct gbm_device *gbm;
+    gboolean gbm_ready;
+
+    int tensor_dmabuf_fd;
+    hipExternalMemory_t tensor_ext_mem;
     float *d_tensor_output;
+    GstMemory *tensor_mem;
+    gsize tensor_alloc_size;
 
     gboolean imported;
 };
