@@ -115,6 +115,10 @@ struct _GstMagmaInfer {
     hipModule_t kernel_module;
     hipFunction_t kernel_dummy;
     gboolean kernel_ready;
+
+    // MIGraphX model (opaque C++ wrapper, nullptr until loaded)
+    void* migraphx_model;
+    gboolean model_loaded;
 };
 
 G_END_DECLS

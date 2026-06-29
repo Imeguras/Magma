@@ -36,13 +36,13 @@ struct _GstMagmaPreproc {
 
     // tensor output — backed by DMABuf for zero-copy
     int drm_fd;
-    struct gbm_device *gbm;
+    struct gbm_device* gbm;
     gboolean gbm_ready;
 
     int tensor_dmabuf_fd;
     hipExternalMemory_t tensor_ext_mem;
-    float *d_tensor_output;
-    GstMemory *tensor_mem;
+    float* d_tensor_output;
+    GstMemory* tensor_mem;
     gsize tensor_alloc_size;
 
     gboolean imported;

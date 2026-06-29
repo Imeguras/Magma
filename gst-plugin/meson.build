@@ -15,6 +15,11 @@ gstallocators_dep = dependency('gstreamer-allocators-1.0', required : true)
 gbm_dep = dependency('gbm', required : true)
 drm_dep = dependency('libdrm', required : true)
 
+migraphx_dep = declare_dependency(
+  include_directories: include_directories('/opt/rocm/include'),
+  dependencies: cpp.find_library('migraphx_c', dirs: '/opt/rocm/lib'),
+)
+
 inc = include_directories('include')
 
 kernel_src_dir = meson.current_source_dir() / 'kernels'
@@ -49,7 +54,8 @@ mgminfer_shlib = shared_library('mgminfer',
   ],
   include_directories: [inc, hip_inc],
   dependencies: [gst_dep, gstbase_dep, gstvideo_dep, gstallocators_dep,
-                 kernel_utils_dep, gbm_dep, drm_dep, hip_host_dep],
+                 kernel_utils_dep, gbm_dep, drm_dep, hip_host_dep,
+                 migraphx_dep],
   install: true,
   install_dir: plugins_install_dir,
 )
