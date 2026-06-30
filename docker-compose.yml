@@ -15,43 +15,38 @@ services:
       - /dev/dri
     group_add:
       - video
-      - render
+    #  - render
     command: /bin/bash
 
-  build:
-    image: magma:latest
-    volumes:
-      - .:/workspace
-    working_dir: /workspace
+  kafka:
+    image: apache/kafka:latest
+    ports:
+      - "9092:9092"
     environment:
-      - PATH=/opt/rocm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-      - LD_LIBRARY_PATH=/opt/rocm/lib
-    devices:
-      - /dev/kfd
-      - /dev/dri
-    group_add:
-      - video
-      - render
-    command: >
-      sh -c "
-        rm -rf build &&
-        meson setup build &&
-        ninja -C build
-      "
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,INTERNAL://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,INTERNAL://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,INTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      CLUSTER_ID: magma-cluster
+    healthcheck:
+      test: /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list
+      start_period: 30s
+      interval: 10s
+      retries: 5
 
-  shell:
-    image: magma:latest
-    volumes:
-      - .:/workspace
-    working_dir: /workspace
-    stdin_open: true
-    tty: true
+  kafbat-ui:
+    image: ghcr.io/kafbat/kafka-ui:latest
+    ports:
+      - "8080:8080"
     environment:
-      - PATH=/opt/rocm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-      - LD_LIBRARY_PATH=/opt/rocm/lib
-    devices:
-      - /dev/kfd
-      - /dev/dri
-    group_add:
-      - video
-      - render
+      DYNAMIC_CONFIG_ENABLED: true
+      KAFKA_CLUSTERS_0_NAME: magma
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    depends_on:
+      kafka:
+        condition: service_healthy

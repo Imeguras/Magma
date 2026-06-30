@@ -1,6 +1,7 @@
 #define GST_CHECK_DISABLE_ASSERT_OVERRIDES
 #include <gst/check/gstcheck.h>
-#include "mgminfer.hpp"
+#include <gst/video/video.h>
+#include "magma-infer-meta.h"
 #include "magma-meta.h"
 
 #include <cstdlib>

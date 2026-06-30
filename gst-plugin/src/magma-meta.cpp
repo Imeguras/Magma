@@ -4,8 +4,9 @@ static gsize _magma_tensor_meta_quark = 0;
 
 GType magma_tensor_meta_api_get_type(void) {
     if (g_once_init_enter(&_magma_tensor_meta_quark)) {
-        GQuark q = g_quark_from_static_string("MagmaTensorMetaAPI");
-        g_once_init_leave(&_magma_tensor_meta_quark, q);
+        const gchar* tags[] = {NULL};
+        GType t = gst_meta_api_type_register("MagmaTensorMetaAPI", tags);
+        g_once_init_leave(&_magma_tensor_meta_quark, (gsize)t);
     }
     return (GType)_magma_tensor_meta_quark;
 }
@@ -40,8 +41,9 @@ static gsize _magma_tensor_meta_info = 0;
 
 const GstMetaInfo* magma_tensor_meta_get_info(void) {
     if (g_once_init_enter(&_magma_tensor_meta_info)) {
-        const GstMetaInfo* info =
-            gst_meta_register(MAGMA_TENSOR_META_API_TYPE, "MagmaTensorMeta", sizeof(MagmaTensorMeta), magma_tensor_meta_init, magma_tensor_meta_free, magma_tensor_meta_transform);
+        const GstMetaInfo* info = gst_meta_register(MAGMA_TENSOR_META_API_TYPE, "MagmaTensorMeta", sizeof(MagmaTensorMeta), magma_tensor_meta_init, magma_tensor_meta_free, magma_tensor_meta_transform);
+        if (!info)
+            info = gst_meta_get_info("MagmaTensorMeta");
         g_once_init_leave(&_magma_tensor_meta_info, (gsize)info);
     }
     return (const GstMetaInfo*)_magma_tensor_meta_info;

@@ -1,5 +1,5 @@
 #include <gst/check/gstcheck.h>
-#include "mgminfer.hpp"
+#include "magma-infer-meta.h"
 
 GST_START_TEST(test_meta_api_type_is_valid) {
     GType t = magma_inference_meta_api_get_type();

@@ -43,7 +43,7 @@ static GstFlowReturn gst_magma_publish_render(GstBaseSink* bsink, GstBuffer* buf
         return GST_FLOW_ERROR;
     }
 
-    rd_kafka_resp_err_t err = rd_kafka_produce(rkt, RD_KAFKA_PARTITION_UA, RD_KAFKA_MSG_F_COPY, info.data, info.size, NULL, 0, NULL);
+    rd_kafka_resp_err_t err = (rd_kafka_resp_err_t)rd_kafka_produce(rkt, RD_KAFKA_PARTITION_UA, RD_KAFKA_MSG_F_COPY, info.data, info.size, NULL, 0, NULL);
 
     if (err != RD_KAFKA_RESP_ERR_NO_ERROR) {
         GST_WARNING_OBJECT(self, "Kafka produce failed: %s", rd_kafka_err2str(err));
@@ -70,6 +70,9 @@ static gboolean gst_magma_publish_start(GstBaseSink* bsink) {
     if (self->client_id)
         rd_kafka_conf_set(conf, "client.id", self->client_id, errstr, sizeof(errstr));
 
+    if (self->broker)
+        rd_kafka_conf_set(conf, "bootstrap.servers", self->broker, errstr, sizeof(errstr));
+
     if (self->compression && g_strcmp0(self->compression, "none") != 0)
         rd_kafka_conf_set(conf, "compression.codec", self->compression, errstr, sizeof(errstr));
 
@@ -90,10 +93,6 @@ static gboolean gst_magma_publish_start(GstBaseSink* bsink) {
     if (!rk) {
         GST_ERROR_OBJECT(self, "Failed to create Kafka producer: %s", errstr);
         return FALSE;
-    }
-
-    if (self->broker) {
-        rd_kafka_brokers_add(rk, self->broker);
     }
 
     self->rk_handle = rk;

@@ -1,5 +1,5 @@
 #include <gst/check/gstcheck.h>
-#include "mgminfer.hpp"
+#include "magma-infer-meta.h"
 
 GST_START_TEST(test_infer_object_new_defaults) {
     MagmaInferObject* obj = magma_infer_object_new(0, NULL, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);

@@ -1,5 +1,5 @@
 #include "mgmserialize.hpp"
-#include "mgminfer.hpp"
+#include "magma-infer-meta.h"
 
 #include <cstring>
 #include <string>
@@ -147,7 +147,7 @@ static GstCaps* gst_magma_serialize_transform_caps(GstBaseTransform* trans, GstP
     if (direction == GST_PAD_SINK) {
         result = gst_caps_new_empty_simple("application/x-magma-msg");
     } else {
-        result = gst_caps_new_empty_simple("video/x-raw(memory:DMABuf),format=(string)NV12");
+        result = gst_caps_from_string("video/x-raw(memory:DMABuf),format=(string)NV12");
     }
     if (filter) {
         GstCaps* tmp = gst_caps_intersect_full(result, filter, GST_CAPS_INTERSECT_FIRST);

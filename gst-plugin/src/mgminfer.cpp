@@ -29,6 +29,18 @@ struct MigraphXModel {
     std::string input_name;
     migraphx::shape input_shape;
     std::vector<std::size_t> input_lengths;
+    std::vector<std::pair<std::string, migraphx::shape>> all_params;
+    hipDeviceptr_t d_output_scratch;
+    std::size_t output_scratch_bytes;
+
+    MigraphXModel() : d_output_scratch(nullptr), output_scratch_bytes(0) {}
+
+    ~MigraphXModel() {
+        if (d_output_scratch) {
+            (void)hipFree(d_output_scratch);
+            d_output_scratch = nullptr;
+        }
+    }
 };
 
 } // anonymous namespace
@@ -192,11 +204,6 @@ static void gst_magma_infer_get_property(GObject* object, guint prop_id, GValue*
 static void gst_magma_infer_finalize(GObject* object) {
     GstMagmaInfer* self = GST_MAGMA_INFER(object);
 
-    if (self->kernel_module) {
-        (void)hipModuleUnload(self->kernel_module);
-        self->kernel_module = nullptr;
-    }
-
     if (self->objects_ext_mem) {
         (void)hipDestroyExternalMemory(self->objects_ext_mem);
         self->objects_ext_mem = nullptr;
@@ -263,22 +270,61 @@ static gboolean gst_magma_infer_start(GstBaseTransform* trans) {
         return FALSE;
     }
 
-    /* extract input parameter info */
+    /* extract parameter info — find the real input (skip internal params like main:#...) */
     auto param_shapes = model->prog.get_parameter_shapes();
     auto names = param_shapes.names();
     if (names.empty()) {
-        GST_ERROR_OBJECT(self, "MIGraphX model has no input parameters");
+        GST_ERROR_OBJECT(self, "MIGraphX model has no parameters");
         return FALSE;
     }
-    model->input_name = names.front();
-    model->input_shape = param_shapes.get(model->input_name);
-    model->input_lengths = model->input_shape.get_lengths();
+
+    model->input_name.clear();
+    model->all_params.clear();
+    model->d_output_scratch = nullptr;
+    model->output_scratch_bytes = 0;
+
+    for (auto& n : names) {
+        auto s = param_shapes[n];
+        model->all_params.emplace_back(n, s);
+        /* real input param — not synthetic (synthetic has main:# prefix) */
+        if (n[0] != 'm' || strncmp(n, "main:#", 6) != 0) {
+            if (model->input_name.empty()) {
+                model->input_name = n;
+                model->input_shape = s;
+                model->input_lengths = s.lengths();
+            }
+        }
+    }
+
+    if (model->input_name.empty()) {
+        GST_ERROR_OBJECT(self, "could not identify input parameter");
+        return FALSE;
+    }
+
+    /* pre-allocate GPU scratch for output params */
+    std::size_t max_scratch = 0;
+    for (auto& [n, s] : model->all_params) {
+        if (n != model->input_name) {
+            max_scratch = std::max(max_scratch, s.bytes());
+        }
+    }
+    if (max_scratch > 0) {
+        hipError_t err = hipMalloc(&model->d_output_scratch, max_scratch);
+        if (err != hipSuccess) {
+            GST_ERROR_OBJECT(self, "hipMalloc(output_scratch %zu) failed: %s",
+                max_scratch, hipGetErrorString(err));
+            return FALSE;
+        }
+        model->output_scratch_bytes = max_scratch;
+        GST_INFO_OBJECT(self, "allocated %zu bytes GPU scratch for output params", max_scratch);
+    }
 
     self->migraphx_model = model.release();
     self->model_loaded = TRUE;
-    GST_INFO_OBJECT(self, "MIGraphX model ready on GPU — input '%s' %s",
+    GST_INFO_OBJECT(self, "MIGraphX model ready — input '%s' (%zu dims), %zu total params",
         static_cast<MigraphXModel*>(self->migraphx_model)->input_name.c_str(),
-        static_cast<MigraphXModel*>(self->migraphx_model)->prog.get_output_shapes().size() > 0 ? "has outputs" : "");
+        static_cast<MigraphXModel*>(self->migraphx_model)->input_lengths.size(),
+        static_cast<MigraphXModel*>(self->migraphx_model)->all_params.size());
 
     return TRUE;
 }
@@ -300,7 +346,6 @@ static gboolean gst_magma_infer_stop(GstBaseTransform* trans) {
     GST_INFO_OBJECT(self, "HIP stream destroyed");
 
     self->model_loaded = FALSE;
-    self->kernel_ready = FALSE;
 
     return TRUE;
 }
@@ -323,9 +368,6 @@ static void gst_magma_infer_init(GstMagmaInfer* self) {
     self->max_objects = 100;
 
     self->hip_stream = nullptr;
-    self->kernel_module = nullptr;
-    self->kernel_dummy = nullptr;
-    self->kernel_ready = FALSE;
 
     self->migraphx_model = nullptr;
     self->model_loaded = FALSE;
@@ -380,6 +422,17 @@ static hipExternalMemory_t import_dmabuf_to_hip(int dmabuf_fd, gsize size, hipDe
     return ext_mem;
 }
 
+/** --- dummy kernel fallback (removed — model must succeed or fail) --- */
+
+/** --- attach a single detection to the buffer --- */
+static GstFlowReturn attach_inference_meta(GstMagmaInfer* self, GstBuffer* buf, gint num_objects) {
+    MagmaInferenceMeta* m = magma_buffer_add_inference_meta(buf, self->in_width, self->in_height);
+    if (!m) { GST_ERROR_OBJECT(self, "failed to attach inference meta"); return GST_FLOW_ERROR; }
+    m->num_objects = num_objects;
+    m->objects_gpu = gst_memory_ref(self->objects_mem);
+    return GST_FLOW_OK;
+}
+
 /** --- TRANSFORM --- */
 static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBuffer* buf) {
     GstMagmaInfer* self = GST_MAGMA_INFER(trans);
@@ -389,33 +442,9 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
         return GST_FLOW_OK;
 
     MagmaTensorMeta* tmeta = magma_buffer_get_tensor_meta(buf);
-    if (!self->model_loaded || !tmeta) {
-        /* fallback: dummy kernel */
-        if (tmeta) {
-            GST_WARNING_OBJECT(self, "model not loaded — using dummy kernel");
-        } else {
-            GST_WARNING_OBJECT(self, "no tensor meta — skipping inference");
-            return GST_FLOW_OK;
-        }
-        goto run_dummy;
-    }
-
-    auto* model = static_cast<MigraphXModel*>(self->migraphx_model);
-
-    /* check tensor shape vs model expected input */
-    if (model->input_lengths.size() != 4 ||
-        (int)model->input_lengths[0] != 1 ||
-        (int)model->input_lengths[1] != tmeta->channels ||
-        (int)model->input_lengths[2] != tmeta->height ||
-        (int)model->input_lengths[3] != tmeta->width) {
-        GST_WARNING_OBJECT(self, "tensor %dx%dx%d does not match model expected %s — using dummy",
-            tmeta->channels, tmeta->height, tmeta->width,
-            model->input_shape.get_lengths().size() >= 4
-                ? std::to_string(model->input_lengths[1]) + "x" +
-                  std::to_string(model->input_lengths[2]) + "x" +
-                  std::to_string(model->input_lengths[3]).c_str()
-                : "?");
-        goto run_dummy;
+    if (!tmeta) {
+        GST_WARNING_OBJECT(self, "no tensor meta — skipping inference");
+        return GST_FLOW_OK;
     }
 
     /* ensure stream */
@@ -427,126 +456,84 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
         }
     }
 
-    /* ---- real MIGraphX inference ---- */
+    /* MIGraphX path */
+    if (self->model_loaded) {
+        auto* model = static_cast<MigraphXModel*>(self->migraphx_model);
 
-    /* 1. import tensor DMABuf → HIP device pointer */
-    int tensor_fd = gst_dmabuf_memory_get_fd(tmeta->tensor_mem);
-    gsize tensor_bytes = gst_memory_get_sizes(tmeta->tensor_mem, NULL, NULL);
-    hipDeviceptr_t d_tensor = 0;
-    hipExternalMemory_t tensor_ext = import_dmabuf_to_hip(tensor_fd, tensor_bytes, &d_tensor);
-    if (!tensor_ext || !d_tensor) {
-        GST_ERROR_OBJECT(self, "failed to import tensor DMABuf to HIP");
-        return GST_FLOW_ERROR;
-    }
+        if (model->input_lengths.size() == 4 &&
+            (int)model->input_lengths[0] == 1 &&
+            (int)model->input_lengths[1] == tmeta->channels &&
+            (int)model->input_lengths[2] == tmeta->height &&
+            (int)model->input_lengths[3] == tmeta->width) {
 
-    /* 2. build MIGraphX input argument wrapping the HIP pointer */
-    migraphx::shape tensor_shape(migraphx::shape::float_type,
-        {static_cast<std::size_t>(1),
-         static_cast<std::size_t>(tmeta->channels),
-         static_cast<std::size_t>(tmeta->height),
-         static_cast<std::size_t>(tmeta->width)});
-    migraphx::argument input_arg(tensor_shape, (void*)d_tensor);
+            /* import tensor DMABuf → HIP */
+            int tensor_fd = gst_dmabuf_memory_get_fd(tmeta->tensor_mem);
+            gsize tensor_bytes = gst_memory_get_sizes(tmeta->tensor_mem, NULL, NULL);
+            hipDeviceptr_t d_tensor = 0;
+            hipExternalMemory_t tensor_ext = import_dmabuf_to_hip(tensor_fd, tensor_bytes, &d_tensor);
+            if (!tensor_ext || !d_tensor) {
+                GST_ERROR_OBJECT(self, "failed to import tensor DMABuf to HIP");
+                return GST_FLOW_ERROR;
+            }
 
-    /* 3. run inference */
-    migraphx::arguments outputs;
-    try {
-        outputs = model->prog.eval({{model->input_name, input_arg}});
-    } catch (const std::exception& e) {
-        GST_ERROR_OBJECT(self, "MIGraphX eval failed: %s", e.what());
-        (void)hipDestroyExternalMemory(tensor_ext);
-        return GST_FLOW_ERROR;
-    }
+            /* build argument map — pass all params */
+            try {
+                migraphx::program_parameters eval_args;
+                for (auto& [n, s] : model->all_params) {
+                    migraphx::shape arg_shape(s.type(), s.lengths());
+                    if (n == model->input_name) {
+                        eval_args.add(n.c_str(), migraphx::argument(arg_shape, (void*)d_tensor));
+                    } else {
+                        eval_args.add(n.c_str(), migraphx::argument(arg_shape, (void*)model->d_output_scratch));
+                    }
+                }
 
-    /* 4. cleanup tensor HIP import — DMABuf stays alive via GstMemory ref in meta */
-    (void)hipDestroyExternalMemory(tensor_ext);
+                auto outputs = model->prog.eval(eval_args);
+                (void)hipDestroyExternalMemory(tensor_ext);
 
-    /* 5. copy first output → objects_gpu DMABuf */
-    if (outputs.empty()) {
-        GST_WARNING_OBJECT(self, "MIGraphX returned no outputs");
-        goto run_dummy;
-    }
-    auto& output_arg = outputs.front();
-    auto output_shape = output_arg.get_shape();
-    auto* d_output = static_cast<const char*>(output_arg.data());
-    gsize output_bytes = output_shape.bytes();
+                if (outputs.empty()) {
+                    GST_ERROR_OBJECT(self, "MIGraphX returned no outputs");
+                    return GST_FLOW_ERROR;
+                }
 
-    gsize copy_bytes = std::min(output_bytes, self->max_objects * sizeof(MagmaInferObjectGPU));
-    hipError_t err = hipMemcpyDtoD(self->d_objects, (hipDeviceptr_t)d_output, copy_bytes);
-    if (err != hipSuccess) {
-        GST_ERROR_OBJECT(self, "hipMemcpyDtoD (output→objects) failed: %s", hipGetErrorString(err));
-        return GST_FLOW_ERROR;
-    }
+                auto output_arg = outputs.front();
+                auto output_shape = output_arg.get_shape();
+                auto* d_output = static_cast<const char*>(output_arg.data());
+                gsize output_bytes = output_shape.bytes();
+                gsize copy_bytes = std::min(output_bytes, self->max_objects * sizeof(MagmaInferObjectGPU));
 
-    /* 6. parse output into detections.
-     * For a [1,1] scalar model: write one detection with confidence = output[0].
-     * For multi-output detection models: override this logic later. */
-    {
-        float tmp;
-        hipMemcpyDtoH(&tmp, self->d_objects, sizeof(float));
-        gint num = 1;
-        MagmaInferObjectGPU objs[1] = {};
-        objs[0].class_id = 1;
-        objs[0].confidence = tmp;
-        objs[0].x = 0.0f; objs[0].y = 0.0f; objs[0].width = 1.0f; objs[0].height = 1.0f;
-        hipMemcpyHtoD(self->d_objects, objs, sizeof(objs));
-        (void)num; // placeholder for multi-object expansion
-    }
+                hipError_t herr = hipMemcpyDtoD(self->d_objects, (hipDeviceptr_t)d_output, copy_bytes);
+                if (herr != hipSuccess) {
+                    GST_ERROR_OBJECT(self, "hipMemcpyDtoD failed: %s", hipGetErrorString(herr));
+                    return GST_FLOW_ERROR;
+                }
 
-    /* 7. attach inference meta */
-    {
-        MagmaInferenceMeta* m = magma_buffer_add_inference_meta(buf, self->in_width, self->in_height);
-        if (!m) {
-            GST_ERROR_OBJECT(self, "failed to attach inference meta");
-            return GST_FLOW_ERROR;
-        }
-        m->num_objects = 1;
-        m->objects_gpu = gst_memory_ref(self->objects_mem);
-    }
+                /* read first float → confidence for object 0 */
+                float confidence = 0.0f;
+                (void)hipMemcpyDtoH(&confidence, self->d_objects, sizeof(float));
+                MagmaInferObjectGPU objs[1] = {};
+                objs[0].class_id = 1;
+                objs[0].confidence = confidence;
+                objs[0].x = 0.0f; objs[0].y = 0.0f; objs[0].width = 1.0f; objs[0].height = 1.0f;
+                (void)hipMemcpyHtoD(self->d_objects, objs, sizeof(objs));
 
-    GST_LOG_OBJECT(self, "frame %u — MIGraphX inference complete, 1 detection", self->frame_counter);
-    return GST_FLOW_OK;
-
-    /* ---- dummy fallback (no model / shape mismatch / no-outputs) ---- */
-run_dummy:
-    if (!self->hip_stream) {
-        hipError_t err = hipStreamCreate(&self->hip_stream);
-        if (err != hipSuccess) {
-            GST_ERROR_OBJECT(self, "hipStreamCreate failed: %s", hipGetErrorString(err));
+                GST_LOG_OBJECT(self, "frame %u — MIGraphX inference, confidence=%.4f",
+                    self->frame_counter, confidence);
+                return attach_inference_meta(self, buf, 1);
+            } catch (const std::exception& e) {
+                GST_ERROR_OBJECT(self, "MIGraphX eval failed: %s", e.what());
+                (void)hipDestroyExternalMemory(tensor_ext);
+                return GST_FLOW_ERROR;
+            }
+        } else {
+            GST_ERROR_OBJECT(self, "tensor %dx%dx%d does not match model (expected %zu dims)",
+                tmeta->channels, tmeta->height, tmeta->width, model->input_lengths.size());
             return GST_FLOW_ERROR;
         }
     }
-    if (!self->kernel_ready) {
-        std::string kernel_path = std::string(find_kernel_dir()) + "/dummy_infer.hip";
-        HipKernel kern = compile_kernel(kernel_path.c_str(), "dummy_infer");
-        if (!kern.func) {
-            GST_ERROR_OBJECT(self, "Failed to compile dummy_infer kernel");
-            return GST_FLOW_ERROR;
-        }
-        self->kernel_module = kern.module;
-        self->kernel_dummy = kern.func;
-        self->kernel_ready = TRUE;
-        GST_INFO_OBJECT(self, "dummy_infer kernel compiled from %s", kernel_path.c_str());
-    }
-    {
-        void* d_ptr = (void*)self->d_objects;
-        void* args[] = {&d_ptr};
-        hipError_t err = hipModuleLaunchKernel(self->kernel_dummy, 1, 1, 1, 1, 1, 1, 0, self->hip_stream, args, nullptr);
-        if (err != hipSuccess) {
-            GST_ERROR_OBJECT(self, "hipModuleLaunchKernel failed: %s", hipGetErrorString(err));
-            return GST_FLOW_ERROR;
-        }
-        err = hipStreamSynchronize(self->hip_stream);
-        if (err != hipSuccess) {
-            GST_ERROR_OBJECT(self, "hipStreamSynchronize failed: %s", hipGetErrorString(err));
-            return GST_FLOW_ERROR;
-        }
-    }
-    MagmaInferenceMeta* m = magma_buffer_add_inference_meta(buf, self->in_width, self->in_height);
-    if (!m) { GST_ERROR_OBJECT(self, "failed to attach inference meta"); return GST_FLOW_ERROR; }
-    m->num_objects = 1;
-    m->objects_gpu = gst_memory_ref(self->objects_mem);
-    GST_LOG_OBJECT(self, "frame %u — dummy detection attached", self->frame_counter);
-    return GST_FLOW_OK;
+
+    GST_ERROR_OBJECT(self, "no model loaded — cannot infer");
+    return GST_FLOW_ERROR;
 }
 
 /** --- CLASS INIT --- */

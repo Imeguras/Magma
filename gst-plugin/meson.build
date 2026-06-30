@@ -24,6 +24,27 @@ inc = include_directories('include')
 
 kernel_src_dir = meson.current_source_dir() / 'kernels'
 
+# Shared meta library — single compilation of meta types to avoid double-registration
+magma_meta_sources = [
+  'src/magma-meta.cpp',
+  'src/magma-infer-meta.cpp',
+]
+
+magma_meta_shlib = shared_library('magma-meta',
+  magma_meta_sources,
+  c_args: plugin_c_args,
+  cpp_args: ['-std=c++17'],
+  include_directories: [inc, hip_inc],
+  dependencies: [gst_dep],
+  install: true,
+  install_dir: get_option('libdir'),
+)
+
+magma_meta_dep = declare_dependency(
+  link_with: magma_meta_shlib,
+  include_directories: inc,
+)
+
 # Shared kernel compilation utility (static lib linked by all GPU plugins)
 kernel_utils_src = ['kernels/kernel_utils.cpp']
 
@@ -41,8 +62,6 @@ kernel_utils_dep = declare_dependency(
 # Plugin: mgminfer
 mgminfer_sources = [
   'src/mgminfer.cpp',
-  'src/magma-meta.cpp',
-  'src/magma-infer-meta.cpp',
 ]
 
 mgminfer_shlib = shared_library('mgminfer',
@@ -55,7 +74,7 @@ mgminfer_shlib = shared_library('mgminfer',
   include_directories: [inc, hip_inc],
   dependencies: [gst_dep, gstbase_dep, gstvideo_dep, gstallocators_dep,
                  kernel_utils_dep, gbm_dep, drm_dep, hip_host_dep,
-                 migraphx_dep],
+                 migraphx_dep, magma_meta_dep],
   install: true,
   install_dir: plugins_install_dir,
 )
@@ -63,7 +82,6 @@ mgminfer_shlib = shared_library('mgminfer',
 # Plugin: mgmpreproc
 mgmpreproc_sources = [
   'src/mgmpreproc.cpp',
-  'src/magma-meta.cpp',
 ]
 
 mgmpreproc_shlib = shared_library('mgmpreproc',
@@ -75,7 +93,7 @@ mgmpreproc_shlib = shared_library('mgmpreproc',
   ],
   include_directories: [inc, hip_inc],
   dependencies: [gst_dep, gstbase_dep, gstvideo_dep, gstallocators_dep,
-                 kernel_utils_dep, gbm_dep, drm_dep],
+                 kernel_utils_dep, gbm_dep, drm_dep, magma_meta_dep],
   install: true,
   install_dir: plugins_install_dir,
 )
@@ -133,16 +151,15 @@ endif
 # ========================================================
 mgmserialize_sources = [
   'src/mgmserialize.cpp',
-  'src/magma-infer-meta.cpp',
 ]
 
 mgmserialize_shlib = shared_library('mgmserialize',
   mgmserialize_sources,
   c_args: plugin_c_args,
   cpp_args: ['-std=c++17'] + magma_msg_cpp_args,
-  include_directories: [inc, hip_inc],
+  include_directories: [inc],
   dependencies: [gst_dep, gstbase_dep, gstvideo_dep, gstallocators_dep,
-                 magma_msg_dep],
+                 magma_meta_dep, magma_msg_dep],
   install: true,
   install_dir: plugins_install_dir,
 )

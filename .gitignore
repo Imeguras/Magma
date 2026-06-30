@@ -7,3 +7,11 @@ builddir
 #AI-stuff
 graphify-out
 .claude
+
+#Infra (docker-compose, configs)
+infra
+
+#Models
+*.onnx
+*.onnx.*
+*.msr
