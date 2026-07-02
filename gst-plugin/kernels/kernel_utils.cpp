@@ -17,14 +17,26 @@ static std::string load_file(const char* path) {
     return src;
 }
 
-HipKernel compile_kernel(const char* hip_source_path, const char* entry_point) {
+HipKernel compile_kernel(const char* hip_source_path, const char* entry_point,
+                         const char* common_path) {
     HipKernel result = {nullptr, nullptr};
 
-    std::string source = load_file(hip_source_path);
-    if (source.empty()) {
+    std::string source;
+    if (common_path) {
+        source = load_file(common_path);
+        if (source.empty()) {
+            fprintf(stderr, "kernel_utils: failed to read common source %s\n", common_path);
+            return result;
+        }
+        source += '\n';
+    }
+
+    std::string kernel_src = load_file(hip_source_path);
+    if (kernel_src.empty()) {
         fprintf(stderr, "kernel_utils: failed to read %s\n", hip_source_path);
         return result;
     }
+    source += kernel_src;
 
     hiprtcProgram prog;
     hiprtcResult r = hiprtcCreateProgram(&prog, source.c_str(), hip_source_path, 0, nullptr, nullptr);

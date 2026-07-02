@@ -114,8 +114,24 @@ mgmvideoconvert_shlib = shared_library('mgmvideoconvert',
   install_dir: plugins_install_dir,
 )
 
+# Plugin: mgmtensordump — read tensor meta, dump binary + RGB preview
+mgmtensordump_sources = [
+  'src/mgmtensordump.cpp',
+]
+
+mgmtensordump_shlib = shared_library('mgmtensordump',
+  mgmtensordump_sources,
+  c_args: plugin_c_args,
+  cpp_args: ['-std=c++17'],
+  include_directories: [inc, hip_inc],
+  dependencies: [gst_dep, gstbase_dep, gstvideo_dep, gstallocators_dep,
+                 hip_host_dep, magma_meta_dep],
+  install: true,
+  install_dir: plugins_install_dir,
+)
+
 # Install kernel sources for runtime JIT loading on deployed systems
-install_data('kernels/preproc_kernels.hip', 'kernels/dummy_infer.hip',
+install_data('kernels/preproc_kernels.hip', 'kernels/common.hip', 'kernels/dummy_infer.hip',
   install_dir: get_option('datadir') / 'magma' / 'kernels',
 )
 
@@ -184,4 +200,5 @@ else
     mgmkpublish_shlib = disabler()
 endif
 
+subdir('addons')
 subdir('tests')

@@ -4,8 +4,12 @@
 
 #include <string>
 #include <cstring>
+#include <vector>
+#include <algorithm>
+#include <cmath>
 #include <fcntl.h>
 #include <unistd.h>
+#include <dlfcn.h>
 #include <xf86drm.h>
 #include <gbm.h>
 #include <migraphx/migraphx.hpp>
@@ -18,6 +22,11 @@ enum {
     PROP_0,
     PROP_MODEL_PATH,
     PROP_INFERENCE_INTERVAL,
+    PROP_PARSER_PLUGIN,
+    PROP_PARSER_FUNC,
+    PROP_CONFIDENCE_THRESH,
+    PROP_NMS_THRESH,
+    PROP_MAX_DETECTIONS,
 };
 
 G_DEFINE_TYPE(GstMagmaInfer, gst_magma_infer, GST_TYPE_BASE_TRANSFORM)
@@ -32,8 +41,10 @@ struct MigraphXModel {
     std::vector<std::pair<std::string, migraphx::shape>> all_params;
     hipDeviceptr_t d_output_scratch;
     std::size_t output_scratch_bytes;
+    int model_width;
+    int model_height;
 
-    MigraphXModel() : d_output_scratch(nullptr), output_scratch_bytes(0) {}
+    MigraphXModel() : d_output_scratch(nullptr), output_scratch_bytes(0), model_width(0), model_height(0) {}
 
     ~MigraphXModel() {
         if (d_output_scratch) {
@@ -44,14 +55,6 @@ struct MigraphXModel {
 };
 
 } // anonymous namespace
-
-/** --- KERNEL PATH RESOLUTION --- */
-static const char* find_kernel_dir(void) {
-    const char* env = g_getenv("MAGMA_KERNEL_DIR");
-    if (env)
-        return env;
-    return MAGMA_KERNEL_SRC_DIR;
-}
 
 /** --- DRM / GBM HELPERS --- */
 static int open_drm_node(void) {
@@ -156,6 +159,16 @@ static gboolean ensure_objects_output(GstMagmaInfer* self) {
     }
 
     GST_INFO_OBJECT(self, "Objects DMABuf allocated (%zu bytes, max %u objects)", bytes, self->max_objects);
+
+    /* allocate GPU count buffer */
+    if (!self->d_num_det) {
+        hipError_t e = hipMalloc(&self->d_num_det, sizeof(int));
+        if (e != hipSuccess) {
+            GST_ERROR_OBJECT(self, "hipMalloc(d_num_det) failed: %s", hipGetErrorString(e));
+            return FALSE;
+        }
+    }
+
     return TRUE;
 }
 
@@ -178,6 +191,25 @@ static void gst_magma_infer_set_property(GObject* object, guint prop_id, const G
         self->inference_interval = g_value_get_uint(value);
         GST_INFO_OBJECT(self, "inference interval set to %u", self->inference_interval);
         break;
+    case PROP_PARSER_PLUGIN:
+        g_free(self->parser_plugin_path);
+        self->parser_plugin_path = g_value_dup_string(value);
+        GST_INFO_OBJECT(self, "parser plugin set to %s", self->parser_plugin_path);
+        break;
+    case PROP_PARSER_FUNC:
+        g_free(self->parser_func_name);
+        self->parser_func_name = g_value_dup_string(value);
+        break;
+    case PROP_CONFIDENCE_THRESH:
+        self->confidence_thresh = g_value_get_float(value);
+        break;
+    case PROP_NMS_THRESH:
+        self->nms_thresh = g_value_get_float(value);
+        break;
+    case PROP_MAX_DETECTIONS:
+        self->max_detections = g_value_get_uint(value);
+        self->max_objects = self->max_detections;
+        break;
     default:
         G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
         break;
@@ -193,6 +225,21 @@ static void gst_magma_infer_get_property(GObject* object, guint prop_id, GValue*
         break;
     case PROP_INFERENCE_INTERVAL:
         g_value_set_uint(value, self->inference_interval);
+        break;
+    case PROP_PARSER_PLUGIN:
+        g_value_set_string(value, self->parser_plugin_path);
+        break;
+    case PROP_PARSER_FUNC:
+        g_value_set_string(value, self->parser_func_name);
+        break;
+    case PROP_CONFIDENCE_THRESH:
+        g_value_set_float(value, self->confidence_thresh);
+        break;
+    case PROP_NMS_THRESH:
+        g_value_set_float(value, self->nms_thresh);
+        break;
+    case PROP_MAX_DETECTIONS:
+        g_value_set_uint(value, self->max_detections);
         break;
     default:
         G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
@@ -214,6 +261,13 @@ static void gst_magma_infer_finalize(GObject* object) {
     }
     self->d_objects = nullptr;
 
+    if (self->d_num_det) {
+        hipError_t e = hipFree(self->d_num_det);
+        if (e != hipSuccess)
+            GST_WARNING_OBJECT(self, "hipFree(d_num_det) failed: %s", hipGetErrorString(e));
+        self->d_num_det = nullptr;
+    }
+
     if (self->hip_stream) {
         (void)hipStreamDestroy(self->hip_stream);
         self->hip_stream = nullptr;
@@ -233,8 +287,18 @@ static void gst_magma_infer_finalize(GObject* object) {
         self->migraphx_model = nullptr;
     }
 
+    if (self->parser_handle) {
+        dlclose(self->parser_handle);
+        self->parser_handle = nullptr;
+    }
+    self->parser_func = nullptr;
+
     g_free(self->model_path);
     self->model_path = NULL;
+    g_free(self->parser_plugin_path);
+    self->parser_plugin_path = NULL;
+    g_free(self->parser_func_name);
+    self->parser_func_name = NULL;
 
     G_OBJECT_CLASS(gst_magma_infer_parent_class)->finalize(object);
 }
@@ -245,6 +309,25 @@ static gboolean gst_magma_infer_start(GstBaseTransform* trans) {
     if (!self->model_path) {
         GST_WARNING_OBJECT(self, "no model-path set — MIGraphX model not loaded");
         return TRUE;
+    }
+
+    /* load parser plugin if configured */
+    if (self->parser_plugin_path && !self->parser_handle) {
+        self->parser_handle = dlopen(self->parser_plugin_path, RTLD_NOW | RTLD_LOCAL);
+        if (!self->parser_handle) {
+            GST_ERROR_OBJECT(self, "failed to load parser plugin '%s': %s",
+                self->parser_plugin_path, dlerror());
+            return FALSE;
+        }
+        self->parser_func = (MagmaParseFunc)dlsym(self->parser_handle, self->parser_func_name);
+        if (!self->parser_func) {
+            GST_ERROR_OBJECT(self, "symbol '%s' not found in parser plugin: %s",
+                self->parser_func_name, dlerror());
+            dlclose(self->parser_handle);
+            self->parser_handle = nullptr;
+            return FALSE;
+        }
+        GST_INFO_OBJECT(self, "loaded parser plugin '%s' → %s", self->parser_plugin_path, self->parser_func_name);
     }
 
     auto path = std::string(self->model_path);
@@ -292,6 +375,13 @@ static gboolean gst_magma_infer_start(GstBaseTransform* trans) {
                 model->input_name = n;
                 model->input_shape = s;
                 model->input_lengths = s.lengths();
+                if (model->input_lengths.size() >= 4) {
+                    model->model_width  = (int)model->input_lengths[3];
+                    model->model_height = (int)model->input_lengths[2];
+                } else if (model->input_lengths.size() == 3) {
+                    model->model_width  = (int)model->input_lengths[2];
+                    model->model_height = (int)model->input_lengths[1];
+                }
             }
         }
     }
@@ -329,7 +419,7 @@ static gboolean gst_magma_infer_start(GstBaseTransform* trans) {
     return TRUE;
 }
 
-/** --- STOP (READY) --- */
+/** --- STOP (READY → NULL) --- */
 static gboolean gst_magma_infer_stop(GstBaseTransform* trans) {
     GstMagmaInfer* self = GST_MAGMA_INFER(trans);
 
@@ -343,6 +433,14 @@ static gboolean gst_magma_infer_stop(GstBaseTransform* trans) {
         (void)hipStreamDestroy(self->hip_stream);
         self->hip_stream = nullptr;
     }
+
+    if (self->parser_handle) {
+        dlclose(self->parser_handle);
+        self->parser_handle = nullptr;
+        self->parser_func = nullptr;
+        GST_INFO_OBJECT(self, "parser plugin unloaded");
+    }
+
     GST_INFO_OBJECT(self, "HIP stream destroyed");
 
     self->model_loaded = FALSE;
@@ -367,10 +465,21 @@ static void gst_magma_infer_init(GstMagmaInfer* self) {
     self->objects_mem = NULL;
     self->max_objects = 100;
 
+    self->d_num_det = nullptr;
+
     self->hip_stream = nullptr;
 
     self->migraphx_model = nullptr;
     self->model_loaded = FALSE;
+
+    self->parser_plugin_path = NULL;
+    self->parser_func_name = g_strdup("magma_parse");
+    self->parser_handle = nullptr;
+    self->parser_func = nullptr;
+
+    self->confidence_thresh = 0.5f;
+    self->nms_thresh = 0.45f;
+    self->max_detections = 100;
 
     gst_base_transform_set_in_place(GST_BASE_TRANSFORM(self), TRUE);
 }
@@ -499,27 +608,185 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
                 auto output_arg = outputs.front();
                 auto output_shape = output_arg.get_shape();
                 auto* d_output = static_cast<const char*>(output_arg.data());
-                gsize output_bytes = output_shape.bytes();
-                gsize copy_bytes = std::min(output_bytes, self->max_objects * sizeof(MagmaInferObjectGPU));
+                GST_LOG_OBJECT(self, "output ptr=%p", (void*)d_output);
 
-                hipError_t herr = hipMemcpyDtoD(self->d_objects, (hipDeviceptr_t)d_output, copy_bytes);
-                if (herr != hipSuccess) {
-                    GST_ERROR_OBJECT(self, "hipMemcpyDtoD failed: %s", hipGetErrorString(herr));
+                /* ensure MIGraphX eval is fully done before parser touches the output */
+                (void)hipStreamSynchronize(self->hip_stream);
+
+                /* copy output to a fresh parser-owned buffer (MIGraphX internally managed) */
+                gsize output_bytes = output_shape.bytes();
+                hipDeviceptr_t d_parser_input = 0;
+                hipError_t pe = hipMalloc(&d_parser_input, output_bytes);
+                if (pe != hipSuccess) {
+                    GST_ERROR_OBJECT(self, "hipMalloc(parser_input %zu) failed", output_bytes);
+                    return GST_FLOW_ERROR;
+                }
+                pe = hipMemcpyDtoD(d_parser_input, (hipDeviceptr_t)d_output, output_bytes);
+                if (pe != hipSuccess) {
+                    GST_ERROR_OBJECT(self, "hipMemcpyDtoD(parser_input) failed");
+                    (void)hipFree(d_parser_input);
                     return GST_FLOW_ERROR;
                 }
 
-                /* read first float → confidence for object 0 */
-                float confidence = 0.0f;
-                (void)hipMemcpyDtoH(&confidence, self->d_objects, sizeof(float));
-                MagmaInferObjectGPU objs[1] = {};
-                objs[0].class_id = 1;
-                objs[0].confidence = confidence;
-                objs[0].x = 0.0f; objs[0].y = 0.0f; objs[0].width = 1.0f; objs[0].height = 1.0f;
-                (void)hipMemcpyHtoD(self->d_objects, objs, sizeof(objs));
+                /* --- parser dispatch --- */
+                if (self->parser_func) {
+                    auto lengths = output_shape.lengths();
+                    int ndim = (int)lengths.size();
 
-                GST_LOG_OBJECT(self, "frame %u — MIGraphX inference, confidence=%.4f",
-                    self->frame_counter, confidence);
-                return attach_inference_meta(self, buf, 1);
+                    int N = 1, stride = 1;
+                    if (ndim == 3) {
+                        int d1 = (int)lengths[1], d2 = (int)lengths[2];
+                        if (d1 > d2) { N = d1; stride = d2; }
+                        else         { N = d2; stride = d1; }
+                    } else if (ndim == 2) {
+                        N = (int)lengths[0]; stride = (int)lengths[1];
+                    }
+                    int num_classes = stride - 4;
+                    if (num_classes < 1) {
+                        GST_ERROR_OBJECT(self, "bad stride %d", stride);
+                        return GST_FLOW_ERROR;
+                    }
+
+                    /* download raw output to CPU */
+                    gsize output_f32 = (gsize)N * stride * sizeof(float);
+                    std::vector<float> host_out(N * stride);
+                    hipMemcpyDtoH(host_out.data(), d_parser_input, output_f32);
+
+                    /* download to CPU for col-major transpose if needed */
+                    bool col_major = ndim == 3 && (int)lengths[1] < (int)lengths[2];
+                    if (col_major) {
+                        std::vector<float> row_major(N * stride);
+                        for (int i = 0; i < N * stride; i++) {
+                            int row = i / stride;
+                            int col = i % stride;
+                            row_major[row * stride + col] = host_out[col * N + row];
+                        }
+                        host_out.swap(row_major);
+                    }
+
+                    int net_w   = self->in_width;
+                    int net_h   = self->in_height;
+                    {
+                        auto* m = static_cast<MigraphXModel*>(self->migraphx_model);
+                        if (m) { net_w = m->model_width; net_h = m->model_height; }
+                    }
+                    float conf_thresh = self->confidence_thresh;
+                    float nms_thresh  = self->nms_thresh;
+                    int max_det       = (int)self->max_detections;
+
+                    /* decode + filter on CPU */
+                    struct Detection {
+                        float x1, y1, x2, y2;
+                        int   class_id;
+                        float score;
+                    };
+                    std::vector<Detection> candidates;
+                    candidates.reserve(N);
+
+                    for (int i = 0; i < N; i++) {
+                        const float* row = &host_out[i * stride];
+                        float cx = row[0];
+                        float cy = row[1];
+                        float w  = std::max(row[2], 0.0f);
+                        float h  = std::max(row[3], 0.0f);
+
+                        float max_score = -1e10f;
+                        int max_class = -1;
+                        for (int c = 0; c < num_classes; c++) {
+                            float sig = 1.0f / (1.0f + std::exp(-row[4 + c]));
+                            if (sig > max_score) { max_score = sig; max_class = c; }
+                        }
+                        if (max_score >= conf_thresh && max_class >= 0) {
+                            candidates.push_back({
+                                cx - w / 2.0f, cy - h / 2.0f,
+                                cx + w / 2.0f, cy + h / 2.0f,
+                                max_class, max_score
+                            });
+                        }
+                    }
+
+                    /* sort by score descending */
+                    std::sort(candidates.begin(), candidates.end(),
+                        [](const Detection& a, const Detection& b) { return a.score > b.score; });
+
+                    /* per-class NMS */
+                    auto iou = [](const Detection& a, const Detection& b) -> float {
+                        float ix1 = std::max(a.x1, b.x1);
+                        float iy1 = std::max(a.y1, b.y1);
+                        float ix2 = std::min(a.x2, b.x2);
+                        float iy2 = std::min(a.y2, b.y2);
+                        float iw = std::max(ix2 - ix1, 0.0f);
+                        float ih = std::max(iy2 - iy1, 0.0f);
+                        float inter = iw * ih;
+                        float area_a = (a.x2 - a.x1) * (a.y2 - a.y1);
+                        float area_b = (b.x2 - b.x1) * (b.y2 - b.y1);
+                        float uni = area_a + area_b - inter;
+                        return uni > 0 ? inter / uni : 0;
+                    };
+
+                    std::vector<uint8_t> suppressed(candidates.size(), 0);
+                    int num_after_nms = 0;
+                    for (size_t i = 0; i < candidates.size(); i++) {
+                        if (suppressed[i]) continue;
+                        for (size_t j = 0; j < i; j++) {
+                            if (suppressed[j]) continue;
+                            if (candidates[i].class_id != candidates[j].class_id) continue;
+                            if (iou(candidates[i], candidates[j]) > nms_thresh) {
+                                suppressed[i] = 1;
+                                break;
+                            }
+                        }
+                        if (!suppressed[i]) num_after_nms++;
+                    }
+
+                    /* compact, normalize, upload */
+                    auto clamp01 = [](float v) { return std::max(0.0f, std::min(1.0f, v)); };
+                    int out_count = 0;
+                    std::vector<MagmaParsedObject> objects;
+                    objects.reserve(num_after_nms);
+                    for (size_t i = 0; i < candidates.size() && out_count < max_det; i++) {
+                        if (suppressed[i]) continue;
+                        auto& d = candidates[i];
+                        float x = clamp01(d.x1 / net_w);
+                        float y = clamp01(d.y1 / net_h);
+                        float w = clamp01((d.x2 - d.x1) / net_w);
+                        float h = clamp01((d.y2 - d.y1) / net_h);
+                        objects.push_back({d.class_id, d.score, x, y, w, h});
+                        out_count++;
+                    }
+
+                    /* upload to GPU */
+                    gsize upload_bytes = out_count * sizeof(MagmaParsedObject);
+                    hipMemcpyHtoD(self->d_objects, objects.data(), upload_bytes);
+                    hipMemcpyHtoD(self->d_num_det, &out_count, sizeof(int));
+
+                    GST_LOG_OBJECT(self, "frame %u — parser produced %d objects (from %zu candidates, %d after NMS)",
+                        self->frame_counter, out_count, candidates.size(), num_after_nms);
+                    return attach_inference_meta(self, buf, out_count);
+
+                } else {
+                    /* --- fallback: legacy hardcoded path (no parser) --- */
+                    gsize output_bytes = output_shape.bytes();
+                    gsize copy_bytes = std::min(output_bytes, self->max_objects * sizeof(MagmaInferObjectGPU));
+
+                    hipError_t herr = hipMemcpyDtoD(self->d_objects, (hipDeviceptr_t)d_output, copy_bytes);
+                    if (herr != hipSuccess) {
+                        GST_ERROR_OBJECT(self, "hipMemcpyDtoD failed: %s", hipGetErrorString(herr));
+                        return GST_FLOW_ERROR;
+                    }
+
+                    float confidence = 0.0f;
+                    (void)hipMemcpyDtoH(&confidence, self->d_objects, sizeof(float));
+                    MagmaInferObjectGPU objs[1] = {};
+                    objs[0].class_id = 1;
+                    objs[0].confidence = confidence;
+                    objs[0].x = 0.0f; objs[0].y = 0.0f; objs[0].width = 1.0f; objs[0].height = 1.0f;
+                    (void)hipMemcpyHtoD(self->d_objects, objs, sizeof(objs));
+
+                    GST_LOG_OBJECT(self, "frame %u — MIGraphX inference, confidence=%.4f",
+                        self->frame_counter, confidence);
+                    return attach_inference_meta(self, buf, 1);
+                }
             } catch (const std::exception& e) {
                 GST_ERROR_OBJECT(self, "MIGraphX eval failed: %s", e.what());
                 (void)hipDestroyExternalMemory(tensor_ext);
@@ -551,10 +818,25 @@ static void gst_magma_infer_class_init(GstMagmaInferClass* klass) {
     g_object_class_install_property(
         gobject_class, PROP_INFERENCE_INTERVAL, g_param_spec_uint("inference-interval", "Inference interval", "Run inference every N frames (1 = every frame)", 1, G_MAXUINT32, 1, G_PARAM_READWRITE));
 
+    g_object_class_install_property(gobject_class, PROP_PARSER_PLUGIN,
+        g_param_spec_string("parser-plugin", "Parser plugin", "Path to parser .so (dlopen)", NULL, G_PARAM_READWRITE));
+
+    g_object_class_install_property(gobject_class, PROP_PARSER_FUNC,
+        g_param_spec_string("parser-function", "Parser function", "Symbol name in parser .so", "magma_parse", G_PARAM_READWRITE));
+
+    g_object_class_install_property(gobject_class, PROP_CONFIDENCE_THRESH,
+        g_param_spec_float("confidence-threshold", "Confidence threshold", "Minimum confidence to keep a detection", 0.0f, 1.0f, 0.5f, G_PARAM_READWRITE));
+
+    g_object_class_install_property(gobject_class, PROP_NMS_THRESH,
+        g_param_spec_float("nms-threshold", "NMS threshold", "IoU threshold for NMS suppression", 0.0f, 1.0f, 0.45f, G_PARAM_READWRITE));
+
+    g_object_class_install_property(gobject_class, PROP_MAX_DETECTIONS,
+        g_param_spec_uint("max-detections", "Max detections", "Maximum number of output objects per frame", 1, 10000, 100, G_PARAM_READWRITE));
+
     gst_element_class_add_static_pad_template(element_class, &sink_template);
     gst_element_class_add_static_pad_template(element_class, &src_template);
 
-    gst_element_class_set_static_metadata(element_class, "Magma Inference", "Meta/Inference/Video", "Attaches GPU inference results as buffer metadata (dummy kernel, Phase 1)", "Magma");
+    gst_element_class_set_static_metadata(element_class, "Magma Inference", "Meta/Inference/Video", "Attaches GPU inference results as buffer metadata (MIGraphX + parser plugins)", "Magma");
 
     trans->set_caps = gst_magma_infer_set_caps;
     trans->transform_ip = gst_magma_infer_transform_ip;

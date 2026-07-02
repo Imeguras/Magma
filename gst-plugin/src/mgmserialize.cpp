@@ -17,6 +17,12 @@ static GstStaticPadTemplate sink_template = GST_STATIC_PAD_TEMPLATE("sink", GST_
 static GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE("src", GST_PAD_SRC, GST_PAD_ALWAYS, GST_STATIC_CAPS("application/x-magma-msg"));
 
 /* ---------- JSON serialization ---------- */
+static void append_float(GString* s, const char* fmt, double val) {
+    char buf[64];
+    g_ascii_dtostr(buf, sizeof(buf), val);
+    g_string_append(s, buf);
+}
+
 static gchar* serialize_to_json(MagmaInferenceMeta* m, int* out_len) {
     GString* s = g_string_new("");
 
@@ -54,15 +60,19 @@ static gchar* serialize_to_json(MagmaInferenceMeta* m, int* out_len) {
     for (guint i = 0; i < m->num_objects; i++) {
         if (i > 0)
             g_string_append(s, ",");
-        g_string_append_printf(s,
-                               "{\"class_id\":%u,\"confidence\":%.6f,"
-                               "\"bbox\":{\"x\":%.6f,\"y\":%.6f,\"w\":%.6f,\"h\":%.6f}}",
-                               host[i].class_id,
-                               host[i].confidence,
-                               host[i].x,
-                               host[i].y,
-                               host[i].width,
-                               host[i].height);
+        g_string_append(s, "{\"class_id\":");
+        g_string_append_printf(s, "%u", host[i].class_id);
+        g_string_append(s, ",\"confidence\":");
+        append_float(s, "%.6f", host[i].confidence);
+        g_string_append(s, ",\"bbox\":{\"x\":");
+        append_float(s, "%.6f", host[i].x);
+        g_string_append(s, ",\"y\":");
+        append_float(s, "%.6f", host[i].y);
+        g_string_append(s, ",\"w\":");
+        append_float(s, "%.6f", host[i].width);
+        g_string_append(s, ",\"h\":");
+        append_float(s, "%.6f", host[i].height);
+        g_string_append(s, "}}");
     }
     g_string_append(s, "]}");
     g_free(host);

@@ -41,6 +41,13 @@ static gboolean magma_inference_meta_init(GstMeta* meta, gpointer params, GstBuf
     m->num_objects = 0;
     m->objects_gpu = NULL;
     m->output_tensors = NULL;
+    m->num_masks = 0;
+    m->masks_gpu = NULL;
+    m->mask_width = 0;
+    m->mask_height = 0;
+    m->has_anomaly = FALSE;
+    m->anomaly_score = 0.0f;
+    m->anomaly_heatmap = NULL;
     return TRUE;
 }
 
@@ -57,6 +64,14 @@ static void magma_inference_meta_free(GstMeta* meta, GstBuffer* buffer) {
         }
         g_ptr_array_unref(m->output_tensors);
         m->output_tensors = NULL;
+    }
+    if (m->masks_gpu) {
+        gst_memory_unref(m->masks_gpu);
+        m->masks_gpu = NULL;
+    }
+    if (m->anomaly_heatmap) {
+        gst_memory_unref(m->anomaly_heatmap);
+        m->anomaly_heatmap = NULL;
     }
 }
 
@@ -77,6 +92,15 @@ static gboolean magma_inference_meta_transform(GstBuffer* transbuf, GstMeta* met
             g_ptr_array_add(dest->output_tensors, gst_memory_ref(mem));
         }
     }
+    dest->num_masks = src->num_masks;
+    dest->mask_width = src->mask_width;
+    dest->mask_height = src->mask_height;
+    if (src->masks_gpu)
+        dest->masks_gpu = gst_memory_ref(src->masks_gpu);
+    dest->has_anomaly = src->has_anomaly;
+    dest->anomaly_score = src->anomaly_score;
+    if (src->anomaly_heatmap)
+        dest->anomaly_heatmap = gst_memory_ref(src->anomaly_heatmap);
     return TRUE;
 }
 

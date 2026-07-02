@@ -30,10 +30,22 @@ struct _MagmaInferenceMeta {
     guint source_width;
     guint source_height;
 
+    /* detection objects (GPU DMABuf) */
     guint num_objects;
     GstMemory* objects_gpu;
 
+    /* raw output tensors (GPU DMABuf array) */
     GPtrArray* output_tensors;
+
+    /* optional seg masks (GPU DMABuf — float[num_masks][mask_h][mask_w]) */
+    guint       num_masks;
+    GstMemory*  masks_gpu;
+    guint       mask_width, mask_height;
+
+    /* optional anomaly output */
+    gboolean    has_anomaly;
+    float       anomaly_score;
+    GstMemory*  anomaly_heatmap;
 };
 
 #define MAGMA_INFERENCE_META_API_TYPE (magma_inference_meta_api_get_type())

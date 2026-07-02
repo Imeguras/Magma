@@ -19,6 +19,13 @@ struct _GstMagmaPreproc {
     gint net_height;
     gfloat scale_factor;
 
+    // ROI (region of interest) — crop rectangle within the source frame
+    gboolean enable_roi;
+    gint roi_x;
+    gint roi_y;
+    gint roi_w;
+    gint roi_h;
+
     gint in_width;
     gint in_height;
     GstVideoFormat in_format;
@@ -46,6 +53,9 @@ struct _GstMagmaPreproc {
     gsize tensor_alloc_size;
 
     gboolean imported;
+
+    // Kernel error reporting
+    int* d_error_code;
 };
 
 G_END_DECLS
