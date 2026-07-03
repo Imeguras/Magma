@@ -1,6 +1,7 @@
 #include <hip/hip_runtime.h>
 #include <stdint.h>
 
+//AI made i was too lazy to do this... buy me a coffee though ;) 
 /* 
  * YOLOv8 output layout:
  *   Default (post-ultralytics v8.1): [1, N, 84] row-major — stride = last dim

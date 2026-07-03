@@ -108,6 +108,7 @@ extern "C" int magma_parse(MagmaParseParams* p) {
     e = hipMalloc(&d_intermediate, inter_bytes);
     if (e != hipSuccess)
         goto fail;
+
     e = hipMalloc(&d_counter, sizeof(int));
     if (e != hipSuccess)
         goto fail;
