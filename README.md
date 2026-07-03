@@ -45,11 +45,12 @@ gst-launch-1.0 filesrc location=./gst-plugin/tests/test_data/ny-walking.mp4 ! qt
 But yolo is for ner...
 ```sh
 #ok this one is actually more difficult as i thought that ai nerds would share their .onnx(tipically where i work getting the .onnx is a matter of just annoying the person) and i struggled so imma write for arch linux 
-cp ./gst-plugin/tests/onnx-gen/scaffolds/biformer_tiny.py /tmp
+cp ./gst-plugin/tests/onnx-gen/scaffolds/biformer_tiny.py /tmp/pit.py
 
 cd /tmp
 git clone https://github.com/rayleizhu/BiFormer.git
 cd BiFormer
+mv /tmp/pit.py ./pit.py
 # use whatever you like but we all know paru is superior
 paru -S python312 python312-virtualenv execstack patchelf
 #i hate python so yes venv is good enough for me
@@ -63,6 +64,7 @@ sudo execstack -c /tmp/BiFormer/BiFormer-env/lib/python3.12/site-packages/pytorc
 sudo execstack -c /tmp/BiFormer/BiFormer-env/lib/python3.12/site-packages/torch/lib/libamdhip64.so
 patchelf --clear-execstack /tmp/BiFormer/BiFormer-env/lib/python3.12/site-packages/torch/lib/libamdhip64.so
 find /tmp/BiFormer/BiFormer-env/lib/python3.12/site-packages/torch/lib/ -name "*.so*" -exec patchelf --clear-execstack 
+
 python3.12 pit.py
 #voila you should have an .onnx! GO BACK TO MAGMA DIR!!!
 READ_ME cd_into_magma_dir
@@ -74,9 +76,17 @@ gst-launch-1.0 filesrc location=./gst-plugin/tests/test_data/ny-walking.mp4 ! \
   mgmpreproc net-width=224 net-height=224 enable-roi=true roi-x=0 roi-y=587 roi-w=719 roi-h=451 ! \
   mgminfer model-onnx-file=./gst-plugin/tests/onnx-gen/onnx-models/biformer_tiny.onnx \
     model-mxr-file=./gst-plugin/tests/onnx-gen/migraph/biformer_tiny.mxr \
-    parser-plugin=/usr/lib/magma/addons/libmagmabiformer-parser.so \
+    parser-plugin=/usr/lib/magma/addons/libmagmabiformer-desc-parser.so \
     confidence-threshold=0.50 max-detections=5 ! \
   mgmosd ! mgmvideoconvert ! autovideosink
+```
+oh btw if you want a detector theres just use biformer-detect_tiny.py instead like so:
+```sh
+cp ./gst-plugin/tests/onnx-gen/scaffolds/biformer_tiny.py /tmp/pit.py
+...
+python3.12 pit.py
+biformervit-detect_tiny.onnx -> biformervit-detect_tiny.mxr
+
 ```
 ### how do i compile the god damn thing:
 I do it like so since im on arch and /usr/local is a mess

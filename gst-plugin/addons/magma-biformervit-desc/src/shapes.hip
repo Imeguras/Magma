@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 /* 
- * biformervit output layout:
+ * biformervit-desc output layout:
  *   Input shape: [1, 3, 224, 224] (CHW)
  *  Output shape: [1, 1000] (class probabilities)
  *  
