@@ -23,8 +23,8 @@ G_DECLARE_FINAL_TYPE(GstMagmaInfer, gst_magma_infer, GST, MAGMA_INFER, GstBaseTr
 
 struct _GstMagmaInfer {
     GstBaseTransform parent;
-
-    gchar* model_path;
+    gchar* onnx_model_path;
+    gchar* mxr_model_path;
 
     guint inference_interval;
     guint frame_counter;
@@ -54,7 +54,7 @@ struct _GstMagmaInfer {
     // Parser plugin
     gchar* parser_plugin_path;
     gchar* parser_func_name;
-    void*  parser_handle;       /* dlopen handle */
+    void* parser_handle;        /* dlopen handle */
     MagmaParseFunc parser_func; /* dlsym'd */
 
     // Thresholds (passed to parser)

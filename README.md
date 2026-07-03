@@ -32,9 +32,9 @@ python -c "import shutil, os; os.makedirs('./gst-plugin/tests/onnx-gen/onnx-mode
 #compile the onnx into a mxr(straight to onnx is also possible but pathwise its annoying regardless of how it would be implemented so... its more convenient to just organise it to your liking)
 migraphx-driver compile --onnx ./gst-plugin/tests/onnx-gen/onnx-models/yolov8n.onnx --binary --output ./gst-plugin/tests/onnx-gen/migraph/yolov8n.mxr
 #watch the magic happen on rocm's environment
-gst-launch-1.0 filesrc location=./gst-plugin/tests/test_data/ny-walking.mp4 ! qtdemux ! h264parse ! vah264dec ! mgmvideoconvert \
+gst-launch-1.0 filesrc location=./gst-plugin/tests/test_data/ny-walking.mp4 ! qtdemux ! h264parse ! vah264dec ! mgmvideoconvert \                                                                  15:55:22
   ! mgmpreproc net-width=640 net-height=640 enable-roi=false roi-x=0 roi-y=587 roi-w=719 roi-h=451 \
-  ! mgminfer model-path=./gst-plugin/tests/onnx-gen/migraph/yolov8n.mxr \
+  ! mgminfer model-onnx-file=./gst-plugin/tests/onnx-gen/onnx-models/yolov8n.onnx model-mxr-file=./gst-plugin/tests/onnx-gen/migraph/yolov8n.mxr \
       parser-plugin=/usr/lib/magma/addons/libyolov8-parser.so \
       confidence-threshold=0.51 nms-threshold=0.45 max-detections=100 \
       class-filter=0 \

@@ -20,7 +20,8 @@ GST_DEBUG_CATEGORY_STATIC(magma_infer_debug);
 
 enum {
     PROP_0,
-    PROP_MODEL_PATH,
+    PROP_ONNX_MODEL_PATH,
+    PROP_MXR_MODEL_PATH,
     PROP_INFERENCE_INTERVAL,
     PROP_PARSER_PLUGIN,
     PROP_PARSER_FUNC,
@@ -95,10 +96,15 @@ static void gst_magma_infer_set_property(GObject* object, guint prop_id, const G
     GstMagmaInfer* self = GST_MAGMA_INFER(object);
 
     switch (prop_id) {
-    case PROP_MODEL_PATH:
-        g_free(self->model_path);
-        self->model_path = g_value_dup_string(value);
-        GST_INFO_OBJECT(self, "model path set to %s", self->model_path);
+    case PROP_ONNX_MODEL_PATH:
+        g_free(self->onnx_model_path);
+        self->onnx_model_path = g_value_dup_string(value);
+        GST_INFO_OBJECT(self, "ONNX model path set to %s", self->onnx_model_path);
+        break;
+    case PROP_MXR_MODEL_PATH:
+        g_free(self->mxr_model_path);
+        self->mxr_model_path = g_value_dup_string(value);
+        GST_INFO_OBJECT(self, "MXR model path set to %s", self->mxr_model_path);
         break;
     case PROP_INFERENCE_INTERVAL:
         self->inference_interval = g_value_get_uint(value);
@@ -136,8 +142,11 @@ static void gst_magma_infer_get_property(GObject* object, guint prop_id, GValue*
     GstMagmaInfer* self = GST_MAGMA_INFER(object);
 
     switch (prop_id) {
-    case PROP_MODEL_PATH:
-        g_value_set_string(value, self->model_path);
+    case PROP_ONNX_MODEL_PATH:
+        g_value_set_string(value, self->onnx_model_path);
+        break;
+    case PROP_MXR_MODEL_PATH:
+        g_value_set_string(value, self->mxr_model_path);
         break;
     case PROP_INFERENCE_INTERVAL:
         g_value_set_uint(value, self->inference_interval);
@@ -166,7 +175,12 @@ static void gst_magma_infer_get_property(GObject* object, guint prop_id, GValue*
     }
 }
 
-/** --- FINALIZE --- */
+/**
+ * @brief Finalize the GstMagmaInfer object, releasing all allocated resources.
+ *
+ * @return void
+ *
+ */
 static void gst_magma_infer_finalize(GObject* object) {
     GstMagmaInfer* self = GST_MAGMA_INFER(object);
 
@@ -197,9 +211,14 @@ static void gst_magma_infer_finalize(GObject* object) {
         self->parser_handle = nullptr;
     }
     self->parser_func = nullptr;
-
-    g_free(self->model_path);
-    self->model_path = NULL;
+    if (self->mxr_model_path) {
+        g_free(self->mxr_model_path);
+        self->mxr_model_path = NULL;
+    }
+    if (self->onnx_model_path) {
+        g_free(self->onnx_model_path);
+        self->onnx_model_path = NULL;
+    }
     g_free(self->parser_plugin_path);
     self->parser_plugin_path = NULL;
     g_free(self->parser_func_name);
@@ -207,40 +226,90 @@ static void gst_magma_infer_finalize(GObject* object) {
 
     G_OBJECT_CLASS(gst_magma_infer_parent_class)->finalize(object);
 }
-
+// this should be split up so its easier to read but im too lazy and with c like functions its always annoying
+/**
+ * @brief Start the GstMagmaInfer element as per gstreamer convention, loading the model and parser plugin if necessary.
+ *        Starts by trying to load a pre-compiled MIGraphX model (.mxr). If that fails, it falls back to compiling from an ONNX model (.onnx) if both are provided.
+ *
+ * @return TRUE if successful, FALSE otherwise.
+ *
+ */
 static gboolean gst_magma_infer_start(GstBaseTransform* trans) {
     GstMagmaInfer* self = GST_MAGMA_INFER(trans);
-    fprintf(stderr, "MAGMA_DBG: mgminfer start() called, model_path=%s parser=%s\n", self->model_path ? self->model_path : "(null)", self->parser_plugin_path ? self->parser_plugin_path : "(null)");
+    GST_DEBUG_OBJECT(self,
+                     "mgminfer start() called, mxr_model_path=%s onnx_model_path=%s parser=%s\n",
+                     self->mxr_model_path ? self->mxr_model_path : "(null)",
+                     self->onnx_model_path ? self->onnx_model_path : "(null)",
+                     self->parser_plugin_path ? self->parser_plugin_path : "(null)");
 
-    if (!self->model_path) {
-        GST_WARNING_OBJECT(self, "no model-path set — MIGraphX model not loaded");
-        return TRUE;
-    }
-
-    auto path = std::string(self->model_path);
-    auto model = std::make_unique<MigraphXModel>();
-    try {
-        if (path.size() >= 4 && path.substr(path.size() - 4) == ".mxr") {
-            model->prog = migraphx::load(path.c_str());
-            GST_INFO_OBJECT(self, "loaded pre-compiled MIGraphX model from %s", path.c_str());
-
-        } else if (path.size() >= 5 && path.substr(path.size() - 5) == ".onnx") {
-            model->prog = migraphx::parse_onnx(path.c_str());
-            GST_INFO_OBJECT(self, "parsed ONNX model from %s, compiling for GPU...", path.c_str());
-            // TODO: yep this might need change if we add multiple GPU's, some people are born rich ig
-            model->prog.compile(migraphx::target("gpu"));
-            GST_INFO_OBJECT(self, "MIGraphX compiled for GPU");
-        } else {
-
-            GST_ERROR_OBJECT(self, "unsupported model file extension (must be .mxr or .onnx)");
-            return FALSE;
-        }
-    } catch (const std::exception& e) {
-        GST_ERROR_OBJECT(self, "MIGraphX model load failed: %s", e.what());
+    if (!self->mxr_model_path && !self->onnx_model_path) {
+        GST_ERROR_OBJECT(self, "Neither mxr-model-path nor onnx-model-path was provided. At least one is required.");
         return FALSE;
     }
 
-    /* load parser plugin if configured (after MIGraphX init, to avoid conflicts) */
+    std::string mxr_path = self->mxr_model_path ? std::string(self->mxr_model_path) : std::string();
+    std::string onnx_path = self->onnx_model_path ? std::string(self->onnx_model_path) : std::string();
+
+    // Determine the ultimate file path we intend to save the compiled model to
+    std::string target_mxr_save_path = mxr_path;
+    if (target_mxr_save_path.empty() && !onnx_path.empty()) {
+        target_mxr_save_path = onnx_path.substr(0, onnx_path.size() - 5) + ".mxr";
+    }
+
+    auto model = std::make_unique<MigraphXModel>();
+    bool model_loaded = false;
+
+    if (!mxr_path.empty()) {
+        try {
+            GST_INFO_OBJECT(self, "Attempting to load pre-compiled MIGraphX model from %s", mxr_path.c_str());
+            model->prog = migraphx::load(mxr_path.c_str());
+            GST_INFO_OBJECT(self, "Successfully loaded pre-compiled MIGraphX model from %s", mxr_path.c_str());
+            model_loaded = true;
+        } catch (const std::exception& e) {
+            GST_WARNING_OBJECT(self, "Failed to load pre-compiled model from %s (Error: %s).", mxr_path.c_str(), e.what());
+            if (onnx_path.empty()) {
+                GST_ERROR_OBJECT(self, "No .onnx fallback provided. Cannot recover.");
+                return FALSE;
+            }
+            GST_INFO_OBJECT(self, "Falling back to compiling from ONNX...");
+        }
+    }
+
+    // Womp womp... you get to compile it from ONNX.
+    if (!model_loaded) {
+        if (onnx_path.empty()) {
+            GST_ERROR_OBJECT(self, "Could not load .mxr model and no fallback .onnx path was provided.");
+            return FALSE;
+        }
+
+        try {
+            GST_INFO_OBJECT(self, "Parsing ONNX model from %s...", onnx_path.c_str());
+            auto prog_tmp = migraphx::parse_onnx(onnx_path.c_str());
+
+            GST_INFO_OBJECT(self, "Compiling ONNX model for GPU target...");
+            prog_tmp.compile(migraphx::target("gpu"));
+
+            // Move it into our runtime container
+            model->prog = std::move(prog_tmp);
+            model_loaded = true;
+
+            // Generate/Overwrite the target .mxr path so it's production-ready for next time
+            try {
+                GST_INFO_OBJECT(self, "Saving/Overwriting optimized MIGraphX model to %s", target_mxr_save_path.c_str());
+                migraphx::save(model->prog, target_mxr_save_path.c_str());
+                GST_INFO_OBJECT(self, "Saved compiled model successfully.");
+            } catch (const std::exception& save_ex) {
+                // If saving fails (e.g. read-only directory), don't crash the pipeline, we can still run in RAM!
+                GST_WARNING_OBJECT(self, "Model compiled successfully but failed to serialize to disk: %s", save_ex.what());
+            }
+
+        } catch (const std::exception& e) {
+            GST_ERROR_OBJECT(self, "MIGraphX ONNX parsing/compilation failed: %s", e.what());
+            return FALSE;
+        }
+    }
+
+    /* Second step load parser plugin if configured (after MIGraphX init, to avoid conflicts) */
     if (self->parser_plugin_path && !self->parser_handle) {
         GST_INFO_OBJECT(self, "loading parser plugin: %s", self->parser_plugin_path);
         self->parser_handle = dlopen(self->parser_plugin_path, RTLD_NOW | RTLD_LOCAL);
@@ -356,7 +425,8 @@ static gboolean gst_magma_infer_stop(GstBaseTransform* trans) {
 
 /** --- INIT --- */
 static void gst_magma_infer_init(GstMagmaInfer* self) {
-    self->model_path = NULL;
+    self->onnx_model_path = NULL;
+    self->mxr_model_path = NULL;
     self->inference_interval = 1;
     self->frame_counter = 0;
     self->in_width = 0;
@@ -702,7 +772,11 @@ static void gst_magma_infer_class_init(GstMagmaInferClass* klass) {
     gobject_class->get_property = gst_magma_infer_get_property;
     gobject_class->finalize = gst_magma_infer_finalize;
 
-    g_object_class_install_property(gobject_class, PROP_MODEL_PATH, g_param_spec_string("model-path", "Model path", "Path to the inference model file", NULL, G_PARAM_READWRITE));
+    g_object_class_install_property(gobject_class, PROP_ONNX_MODEL_PATH, g_param_spec_string("model-onnx-file", "The Onnx Model path", "Path to the onnx model file", NULL, G_PARAM_READWRITE));
+    g_object_class_install_property(
+        gobject_class,
+        PROP_MXR_MODEL_PATH,
+        g_param_spec_string("model-mxr-file", "The MXR Model path", "Path to the mxr model file(needs model-onnx-file, if there path is either invalid or outdated)", NULL, G_PARAM_READWRITE));
 
     g_object_class_install_property(
         gobject_class, PROP_INFERENCE_INTERVAL, g_param_spec_uint("inference-interval", "Inference interval", "Run inference every N frames (1 = every frame)", 1, G_MAXUINT32, 1, G_PARAM_READWRITE));
