@@ -13,9 +13,12 @@ services:
     devices:
       - /dev/kfd
       - /dev/dri
+
+    #this is always an autistic mess ngl... you are on your own, i think i tipically solve this using getent groupid video/render and then adding that to the docker-compose.yml file
+    #theres also the new amd stuff which should work better than this but this way is more documented,
     group_add:
       - video
-    #  - render
+      - render
     command: /bin/bash
 
   kafka:

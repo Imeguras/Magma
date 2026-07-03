@@ -14,4 +14,4 @@ infra
 #Models
 *.onnx
 *.onnx.*
-*.msr
+*.mxr

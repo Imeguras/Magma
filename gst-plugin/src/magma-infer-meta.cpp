@@ -38,6 +38,8 @@ static gboolean magma_inference_meta_init(GstMeta* meta, gpointer params, GstBuf
     MagmaInferenceMeta* m = (MagmaInferenceMeta*)meta;
     m->source_width = 0;
     m->source_height = 0;
+    m->roi_x = m->roi_y = m->roi_w = m->roi_h = 0;
+    m->model_width = m->model_height = 0;
     m->num_objects = 0;
     m->objects_gpu = NULL;
     m->output_tensors = NULL;
@@ -82,6 +84,12 @@ static gboolean magma_inference_meta_transform(GstBuffer* transbuf, GstMeta* met
     MagmaInferenceMeta* dest = magma_buffer_add_inference_meta(transbuf, src->source_width, src->source_height);
     if (!dest)
         return FALSE;
+    dest->roi_x = src->roi_x;
+    dest->roi_y = src->roi_y;
+    dest->roi_w = src->roi_w;
+    dest->roi_h = src->roi_h;
+    dest->model_width = src->model_width;
+    dest->model_height = src->model_height;
     dest->num_objects = src->num_objects;
     if (src->objects_gpu)
         dest->objects_gpu = gst_memory_ref(src->objects_gpu);

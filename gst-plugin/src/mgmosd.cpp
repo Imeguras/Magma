@@ -179,17 +179,28 @@ static GstFlowReturn gst_magma_osd_transform_ip(GstBaseTransform* trans,
     MagmaInferObjectGPU* objects = (MagmaInferObjectGPU*)obj_info.data;
     int num = (int)m->num_objects;
 
-    int roi_w = self->roi_w > 0 ? (int)self->roi_w : self->in_width;
-    int roi_h = self->roi_h > 0 ? (int)self->roi_h : self->in_height;
+    /* Coordinate mapping: prefer metadata from preprocessing chain */
+    int off_x, off_y, map_w, map_h;
+    if (m->model_width > 0 && m->model_height > 0) {
+        off_x = m->roi_x;
+        off_y = m->roi_y;
+        map_w = m->roi_w > 0 ? m->roi_w : self->in_width;
+        map_h = m->roi_h > 0 ? m->roi_h : self->in_height;
+    } else {
+        off_x = self->roi_x;
+        off_y = self->roi_y;
+        map_w = self->roi_w > 0 ? (int)self->roi_w : self->in_width;
+        map_h = self->roi_h > 0 ? (int)self->roi_h : self->in_height;
+    }
 
     BoxParam params[100];
     int nparams = 0;
     for (int i = 0; i < num && nparams < 100; i++) {
         MagmaInferObjectGPU* obj = &objects[i];
-        int sx = (int)self->roi_x + (int)(obj->x * roi_w);
-        int sy = (int)self->roi_y + (int)(obj->y * roi_h);
-        int sw = (int)(obj->width  * roi_w);
-        int sh = (int)(obj->height * roi_h);
+        int sx = off_x + (int)(obj->x * map_w);
+        int sy = off_y + (int)(obj->y * map_h);
+        int sw = (int)(obj->width  * map_w);
+        int sh = (int)(obj->height * map_h);
         if (sw < 2 || sh < 2) continue;
 
         guint cid = obj->class_id % NUM_PALETTE;

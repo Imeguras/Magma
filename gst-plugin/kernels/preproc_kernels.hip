@@ -28,6 +28,7 @@ extern "C" __global__ void nv12_to_rgb_normalized(unsigned char* frame, int widt
     float* b_plane = tensor + 2 * net_w * net_h;
     int point_tensor= y * net_w + x;
     // damn the solution made me feel embarassed that i took about 2 hours to figure it out even with an llm telling me what was wrong with each iteration...
+    // fuck me...
     if (x < net_w && y < net_h) {
         if(crop_x < 0 || crop_y < 0 || crop_w <= 0 || crop_h <= 0 || crop_x + crop_w > width || crop_y + crop_h > height) {
             if (x == 0 && y == 0) *error_code = MAGMA_ERR_ROI_BOUNDS;

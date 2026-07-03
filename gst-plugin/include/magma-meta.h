@@ -13,6 +13,9 @@ struct _MagmaTensorMeta {
     gint width;
     gint height;
     gint channels;
+
+    /* ROI that was cropped from source before resize (0,0,src_w,src_h if none) */
+    gint roi_x, roi_y, roi_w, roi_h;
 };
 
 GType magma_tensor_meta_api_get_type(void);

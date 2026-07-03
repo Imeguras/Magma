@@ -464,7 +464,13 @@ static GstFlowReturn gst_magma_preproc_transform_ip(GstBaseTransform* trans, Gst
     }
 
     // Attach tensor DMABuf as metadata on the buffer (zero-copy: refs the DMABuf)
-    magma_buffer_add_tensor_meta(buf, self->tensor_mem, nw, nh, 3);
+    MagmaTensorMeta* tmeta = magma_buffer_add_tensor_meta(buf, self->tensor_mem, nw, nh, 3);
+    if (tmeta) {
+        tmeta->roi_x = cx;
+        tmeta->roi_y = cy;
+        tmeta->roi_w = cw;
+        tmeta->roi_h = ch;
+    }
 
     return GST_FLOW_OK;
 }

@@ -30,6 +30,10 @@ struct _MagmaInferenceMeta {
     guint source_width;
     guint source_height;
 
+    /* preprocessing context — used by OSD for coordinate mapping */
+    gint roi_x, roi_y, roi_w, roi_h;
+    gint model_width, model_height;
+
     /* detection objects (GPU DMABuf) */
     guint num_objects;
     GstMemory* objects_gpu;

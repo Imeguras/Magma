@@ -17,6 +17,7 @@ static gboolean magma_tensor_meta_init(GstMeta* meta, gpointer params, GstBuffer
     m->width = 0;
     m->height = 0;
     m->channels = 0;
+    m->roi_x = m->roi_y = m->roi_w = m->roi_h = 0;
     return TRUE;
 }
 
@@ -34,6 +35,12 @@ static gboolean magma_tensor_meta_transform(GstBuffer* transbuf, GstMeta* meta, 
     MagmaTensorMeta* src = (MagmaTensorMeta*)meta;
     MagmaTensorMeta* dest;
     dest = magma_buffer_add_tensor_meta(transbuf, src->tensor_mem, src->width, src->height, src->channels);
+    if (dest) {
+        dest->roi_x = src->roi_x;
+        dest->roi_y = src->roi_y;
+        dest->roi_w = src->roi_w;
+        dest->roi_h = src->roi_h;
+    }
     return dest != NULL;
 }
 
