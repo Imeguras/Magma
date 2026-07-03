@@ -31,6 +31,7 @@ extern "C" int magma_parse(MagmaParseParams* p) {
         return 1;
 
     hipStream_t stream = (hipStream_t)p->stream;
+    fprintf(stderr, "PARSE: magma_parse entered, stream=%p d_raw=%p\n", (void*)stream, p->d_raw_output);
 
     int N = 1, stride = 1, num_classes = 80;
     bool col_major = false;
@@ -77,19 +78,23 @@ extern "C" int magma_parse(MagmaParseParams* p) {
     /* col-major: transpose to row-major */
     if (col_major) {
         size_t total = (size_t)N * stride;
+        fprintf(stderr, "PARSE: transpose %zux%zu (%zu elems)\n", (size_t)N, (size_t)stride, total);
         e = hipMalloc(&d_transposed, total * sizeof(float));
         if (e != hipSuccess) goto fail;
         int tgrid = (total + block - 1) / block;
+        fprintf(stderr, "PARSE: launching transpose (%d blocks, %d threads), d_transposed=%p\n", tgrid, block, (void*)d_transposed);
         transpose_col_to_row_kernel<<<tgrid, block, 0, stream>>>(
             (const float*)p->d_raw_output, d_transposed, N, stride);
         e = hipStreamSynchronize(stream);
         if (e != hipSuccess) {
+            fprintf(stderr, "PARSE: transpose sync failed: %s\n", hipGetErrorString(e));
             goto fail;
         }
         d_work = d_transposed;
     }
 
     inter_bytes = (size_t)N * 7 * sizeof(float);
+    fprintf(stderr, "PARSE: inter_bytes=%zu\n", inter_bytes);
     e = hipMalloc(&d_intermediate, inter_bytes);
     if (e != hipSuccess) goto fail;
     e = hipMalloc(&d_counter, sizeof(int));
@@ -98,12 +103,14 @@ extern "C" int magma_parse(MagmaParseParams* p) {
     e = hipMemsetAsync(d_counter, 0, sizeof(int), stream);
     if (e != hipSuccess) goto fail;
 
+    fprintf(stderr, "PARSE: launching decode_filter N=%d stride=%d classes=%d max_out=%d\n", N, stride, num_classes, max_out);
     decode_filter_kernel<<<grid, block, 0, stream>>>(
         (const float*)d_work, d_intermediate, d_counter,
         N, stride, num_classes, p->confidence_thresh, (float)max_out, net_w, net_h);
 
     e = hipStreamSynchronize(stream);
     if (e != hipSuccess) {
+        fprintf(stderr, "PARSE: decode_filter sync failed: %s\n", hipGetErrorString(e));
         goto fail;
     }
 
@@ -111,6 +118,10 @@ extern "C" int magma_parse(MagmaParseParams* p) {
     if (e != hipSuccess) goto fail;
     e = hipStreamSynchronize(stream);
     if (e != hipSuccess) goto fail;
+    /* The atomic counter counts ALL threshold-passing candidates, but only
+       the first max_out are stored in d_intermediate. Clamp to max_out. */
+    if (num_survivors > max_out) num_survivors = max_out;
+    fprintf(stderr, "PARSE: num_survivors=%d (clamped to max_out=%d)\n", num_survivors, max_out);
 
     if (num_survivors <= 0) goto done;
     if (num_survivors > N) num_survivors = N;
@@ -139,12 +150,14 @@ extern "C" int magma_parse(MagmaParseParams* p) {
         if (e != hipSuccess) goto fail;
     }
 
+    fprintf(stderr, "PARSE: launching nms_suppress M=%d\n", num_survivors);
     nms_suppress_kernel<<<grid, block, 0, stream>>>(
         d_sorted, d_suppressed, num_survivors, p->nms_thresh);
 
     e = hipMemsetAsync(d_counter, 0, sizeof(int), stream);
     if (e != hipSuccess) goto fail;
 
+    fprintf(stderr, "PARSE: launching compact, d_objects=%p max_out=%d\n", (void*)p->d_objects, max_out);
     compact_kernel<<<grid, block, 0, stream>>>(
         d_sorted, d_suppressed, (float*)p->d_objects, d_counter,
         num_survivors, net_w, net_h);

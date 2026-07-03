@@ -130,8 +130,22 @@ mgmtensordump_shlib = shared_library('mgmtensordump',
   install_dir: plugins_install_dir,
 )
 
+# Plugin: mgmosd — on-screen display for detection boxes
+mgmosd_sources = ['src/mgmosd.cpp']
+
+mgmosd_shlib = shared_library('mgmosd',
+  mgmosd_sources,
+  c_args: plugin_c_args,
+  cpp_args: ['-std=c++17', '-DMAGMA_KERNEL_SRC_DIR="' + kernel_src_dir + '"'],
+  include_directories: [inc, hip_inc],
+  dependencies: [gst_dep, gstbase_dep, gstvideo_dep, gstallocators_dep,
+                 magma_meta_dep, hip_host_dep, kernel_utils_dep],
+  install: true,
+  install_dir: plugins_install_dir,
+)
+
 # Install kernel sources for runtime JIT loading on deployed systems
-install_data('kernels/preproc_kernels.hip', 'kernels/common.hip', 'kernels/dummy_infer.hip',
+install_data('kernels/preproc_kernels.hip', 'kernels/common.hip', 'kernels/dummy_infer.hip', 'kernels/osd_kernels.hip',
   install_dir: get_option('datadir') / 'magma' / 'kernels',
 )
 
