@@ -328,14 +328,6 @@ static GstFlowReturn gst_magma_preproc_transform_ip(GstBaseTransform* trans, Gst
     // Ensure the tensor meta type is registered exactly once
     magma_tensor_meta_get_info();
 
-    GstMemory* mem = gst_buffer_peek_memory(buf, 0);
-    if (!gst_is_dmabuf_memory(mem)) {
-        GST_ERROR_OBJECT(self, "mgmpreproc requires DMABuf memory");
-        return GST_FLOW_ERROR;
-    }
-
-    gint fd = gst_dmabuf_memory_get_fd(mem);
-
     // Create HIP stream once
     if (!self->hip_stream) {
         hipError_t err = hipStreamCreate(&self->hip_stream);
@@ -354,41 +346,55 @@ static GstFlowReturn gst_magma_preproc_transform_ip(GstBaseTransform* trans, Gst
         }
     }
 
-    // Import DMABuf into HIP — reimport every frame since each buffer has a new FD
-    if (self->external_memory) {
-        hipError_t herr = hipDestroyExternalMemory(self->external_memory);
-        if (herr != hipSuccess)
-            GST_WARNING_OBJECT(self, "hipDestroyExternalMemory failed: %s", hipGetErrorString(herr));
-        self->external_memory = nullptr;
-        self->d_image = 0;
-    }
-
-    {
-        hipExternalMemoryHandleDesc desc{};
-        desc.type = hipExternalMemoryHandleTypeOpaqueFd;
-        desc.handle.fd = fd;
-        desc.size = (gsize)self->in_width * self->in_height * 3 / 2;
-
-        hipError_t herr = hipImportExternalMemory(&self->external_memory, &desc);
-        if (herr != hipSuccess) {
-            GST_ERROR_OBJECT(self, "hipImportExternalMemory failed: %s", hipGetErrorString(herr));
+    // Zero-copy path: MagmaHipMeta from mgmh264dec
+    MagmaHipMeta* hip_meta = magma_buffer_get_hip_meta(buf);
+    if (hip_meta) {
+        self->d_image = hip_meta->d_ptr;
+        self->imported = TRUE;
+    } else {
+        // Fallback: DMABuf import (for vah264dec compat)
+        GstMemory* mem = gst_buffer_peek_memory(buf, 0);
+        if (!gst_is_dmabuf_memory(mem)) {
+            GST_ERROR_OBJECT(self, "mgmpreproc requires MagmaHipMeta or DMABuf memory");
             return GST_FLOW_ERROR;
         }
 
-        hipExternalMemoryBufferDesc bdesc{};
-        bdesc.offset = 0;
-        bdesc.size = desc.size;
+        gint fd = gst_dmabuf_memory_get_fd(mem);
 
-        herr = hipExternalMemoryGetMappedBuffer(&self->d_image, self->external_memory, &bdesc);
-        if (herr != hipSuccess) {
-            GST_ERROR_OBJECT(self, "hipExternalMemoryGetMappedBuffer failed: %s", hipGetErrorString(herr));
-            (void)hipDestroyExternalMemory(self->external_memory);
+        if (self->external_memory) {
+            hipError_t herr = hipDestroyExternalMemory(self->external_memory);
+            if (herr != hipSuccess)
+                GST_WARNING_OBJECT(self, "hipDestroyExternalMemory failed: %s", hipGetErrorString(herr));
             self->external_memory = nullptr;
-            return GST_FLOW_ERROR;
+            self->d_image = 0;
         }
-    }
 
-    self->imported = TRUE;
+        {
+            hipExternalMemoryHandleDesc desc{};
+            desc.type = hipExternalMemoryHandleTypeOpaqueFd;
+            desc.handle.fd = fd;
+            desc.size = (gsize)self->in_width * self->in_height * 3 / 2;
+
+            hipError_t herr = hipImportExternalMemory(&self->external_memory, &desc);
+            if (herr != hipSuccess) {
+                GST_ERROR_OBJECT(self, "hipImportExternalMemory failed: %s", hipGetErrorString(herr));
+                return GST_FLOW_ERROR;
+            }
+
+            hipExternalMemoryBufferDesc bdesc{};
+            bdesc.offset = 0;
+            bdesc.size = desc.size;
+
+            herr = hipExternalMemoryGetMappedBuffer(&self->d_image, self->external_memory, &bdesc);
+            if (herr != hipSuccess) {
+                (void)hipDestroyExternalMemory(self->external_memory);
+                self->external_memory = nullptr;
+                return GST_FLOW_ERROR;
+            }
+        }
+
+        self->imported = TRUE;
+    }
 
     // Compile kernel once on first frame
     if (!self->kernel_ready) {

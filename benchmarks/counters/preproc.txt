@@ -1,0 +1,8 @@
+# Counters for mgmpreproc NV12→RGB kernel analysis
+# Usage: rocprof -i benchmarks/counters/preproc.txt ...
+#
+# Wavefronts issued, instruction counts per type, L1/L2 stalls
+pmc : SQ_WAVES VALUInsts SALUInsts SFetchInsts FlatVMemInsts LDSInsts FlatLDSInsts VALUUtilization FetchSize WriteSize L2CacheHit
+range: 0 :
+gpu: 0
+kernel: nv12_to_rgb_normalized

@@ -66,3 +66,62 @@ MagmaTensorMeta* magma_buffer_add_tensor_meta(GstBuffer* buffer, GstMemory* tens
     }
     return m;
 }
+
+// ─── MagmaHipMeta ────────────────────────────────────────────────────
+
+static gsize _magma_hip_meta_quark = 0;
+
+GType magma_hip_meta_api_get_type(void) {
+    if (g_once_init_enter(&_magma_hip_meta_quark)) {
+        const gchar* tags[] = {NULL};
+        GType t = gst_meta_api_type_register("MagmaHipMetaAPI", tags);
+        g_once_init_leave(&_magma_hip_meta_quark, (gsize)t);
+    }
+    return (GType)_magma_hip_meta_quark;
+}
+
+static gboolean magma_hip_meta_init(GstMeta* meta, gpointer params, GstBuffer* buffer) {
+    MagmaHipMeta* m = (MagmaHipMeta*)meta;
+    m->d_ptr = 0;
+    m->release = NULL;
+    m->user_data = NULL;
+    return TRUE;
+}
+
+static void magma_hip_meta_free(GstMeta* meta, GstBuffer* buffer) {
+    MagmaHipMeta* m = (MagmaHipMeta*)meta;
+    if (m->release)
+        m->release(m->user_data);
+}
+
+static gboolean magma_hip_meta_transform(GstBuffer* transbuf, GstMeta* meta, GstBuffer* buffer, GQuark type, gpointer data) {
+    if (type != 0)
+        return FALSE;
+    MagmaHipMeta* src = (MagmaHipMeta*)meta;
+    MagmaHipMeta* dest = magma_buffer_add_hip_meta(transbuf, src->d_ptr, src->release, src->user_data);
+    if (dest && src->release)
+        src->release = NULL;  // ownership transferred
+    return dest != NULL;
+}
+
+static gsize _magma_hip_meta_info = 0;
+
+const GstMetaInfo* magma_hip_meta_get_info(void) {
+    if (g_once_init_enter(&_magma_hip_meta_info)) {
+        const GstMetaInfo* info = gst_meta_register(MAGMA_HIP_META_API_TYPE, "MagmaHipMeta", sizeof(MagmaHipMeta), magma_hip_meta_init, magma_hip_meta_free, magma_hip_meta_transform);
+        if (!info)
+            info = gst_meta_get_info("MagmaHipMeta");
+        g_once_init_leave(&_magma_hip_meta_info, (gsize)info);
+    }
+    return (const GstMetaInfo*)_magma_hip_meta_info;
+}
+
+MagmaHipMeta* magma_buffer_add_hip_meta(GstBuffer* buffer, hipDeviceptr_t d_ptr, void (*release)(void*), void* user_data) {
+    MagmaHipMeta* m = (MagmaHipMeta*)gst_buffer_add_meta(buffer, magma_hip_meta_get_info(), NULL);
+    if (m) {
+        m->d_ptr = d_ptr;
+        m->release = release;
+        m->user_data = user_data;
+    }
+    return m;
+}

@@ -196,6 +196,13 @@ static void gst_magma_infer_finalize(GObject* object) {
         self->d_num_det = nullptr;
     }
 
+    if (self->cached_tensor_ext) {
+        (void)hipDestroyExternalMemory(self->cached_tensor_ext);
+        self->cached_tensor_ext = nullptr;
+    }
+    self->cached_tensor_dptr = 0;
+    self->cached_tensor_mem = NULL;
+
     if (self->hip_stream) {
         (void)hipStreamDestroy(self->hip_stream);
         self->hip_stream = nullptr;
@@ -404,6 +411,14 @@ static gboolean gst_magma_infer_stop(GstBaseTransform* trans) {
     }
     GST_INFO_OBJECT(self, "MIGraphX model unloaded");
 
+    /* destroy cached tensor DMABuf import */
+    if (self->cached_tensor_ext) {
+        (void)hipDestroyExternalMemory(self->cached_tensor_ext);
+        self->cached_tensor_ext = nullptr;
+    }
+    self->cached_tensor_dptr = 0;
+    self->cached_tensor_mem = NULL;
+
     if (self->hip_stream) {
         (void)hipStreamDestroy(self->hip_stream);
         self->hip_stream = nullptr;
@@ -452,6 +467,11 @@ static void gst_magma_infer_init(GstMagmaInfer* self) {
     self->max_detections = 100;
 
     self->class_filter = -1; /* -1 = no filter */
+
+    /* DMABuf import cache */
+    self->cached_tensor_mem = NULL;
+    self->cached_tensor_ext = nullptr;
+    self->cached_tensor_dptr = 0;
 
     gst_base_transform_set_in_place(GST_BASE_TRANSFORM(self), TRUE);
 }
@@ -594,15 +614,32 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
         if (model->input_lengths.size() == 4 && (int)model->input_lengths[0] == 1 && (int)model->input_lengths[1] == tmeta->channels && (int)model->input_lengths[2] == tmeta->height &&
             (int)model->input_lengths[3] == tmeta->width) {
 
-            /* import tensor DMABuf → HIP */
-            int tensor_fd = gst_dmabuf_memory_get_fd(tmeta->tensor_mem);
-            gsize tensor_bytes = gst_memory_get_sizes(tmeta->tensor_mem, NULL, NULL);
-            hipDeviceptr_t d_tensor = 0;
-            hipExternalMemory_t tensor_ext = import_dmabuf_to_hip(tensor_fd, tensor_bytes, &d_tensor);
-            if (!tensor_ext || !d_tensor) {
-                GST_ERROR_OBJECT(self, "failed to import tensor DMABuf to HIP");
-                return GST_FLOW_ERROR;
+            /* import tensor DMABuf → HIP (cached — tensor fd is stable across frames) */
+            if (tmeta->tensor_mem != self->cached_tensor_mem) {
+                if (self->cached_tensor_ext) {
+                    (void)hipDestroyExternalMemory(self->cached_tensor_ext);
+                    self->cached_tensor_ext = nullptr;
+                }
+                self->cached_tensor_dptr = 0;
+                self->cached_tensor_mem = NULL;
+
+                int tensor_fd = gst_dmabuf_memory_get_fd(tmeta->tensor_mem);
+                if (tensor_fd < 0) {
+                    GST_ERROR_OBJECT(self, "failed to get tensor DMABuf fd");
+                    return GST_FLOW_ERROR;
+                }
+                gsize tensor_bytes = gst_memory_get_sizes(tmeta->tensor_mem, NULL, NULL);
+                hipExternalMemory_t ext = import_dmabuf_to_hip(tensor_fd, tensor_bytes, &self->cached_tensor_dptr);
+                close(tensor_fd);
+                if (!ext || !self->cached_tensor_dptr) {
+                    self->cached_tensor_dptr = 0;
+                    GST_ERROR_OBJECT(self, "failed to import tensor DMABuf to HIP");
+                    return GST_FLOW_ERROR;
+                }
+                self->cached_tensor_ext = ext;
+                self->cached_tensor_mem = tmeta->tensor_mem;
             }
+            hipDeviceptr_t d_tensor = self->cached_tensor_dptr;
 
             /* build argument map — pass all params */
             try {
@@ -619,7 +656,7 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
                 auto outputs = model->prog.eval(eval_args);
 
                 if (outputs.empty()) {
-                    (void)hipDestroyExternalMemory(tensor_ext);
+                    
                     GST_ERROR_OBJECT(self, "MIGraphX returned no outputs");
                     return GST_FLOW_ERROR;
                 }
@@ -710,7 +747,7 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
 
                     if (pret != 0) {
                         GST_ERROR_OBJECT(self, "parser failed with code %d", pret);
-                        (void)hipDestroyExternalMemory(tensor_ext);
+                        
                         return GST_FLOW_ERROR;
                     }
 
@@ -718,7 +755,7 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
                     (void)hipMemcpyDtoH(&num_detected, self->d_num_det, sizeof(int));
 
                     GST_LOG_OBJECT(self, "frame %u — parser produced %d objects", self->frame_counter, num_detected);
-                    (void)hipDestroyExternalMemory(tensor_ext);
+                    
                     return attach_inference_meta(self, buf, num_detected);
 
                 } else {
@@ -729,7 +766,7 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
                     hipError_t herr = hipMemcpyDtoD(self->d_objects, (hipDeviceptr_t)d_output, copy_bytes);
                     if (herr != hipSuccess) {
                         GST_ERROR_OBJECT(self, "hipMemcpyDtoD failed: %s", hipGetErrorString(herr));
-                        (void)hipDestroyExternalMemory(tensor_ext);
+                        
                         return GST_FLOW_ERROR;
                     }
 
@@ -749,7 +786,7 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
                 }
             } catch (const std::exception& e) {
                 GST_ERROR_OBJECT(self, "MIGraphX eval failed: %s", e.what());
-                (void)hipDestroyExternalMemory(tensor_ext);
+                
                 return GST_FLOW_ERROR;
             }
         } else {

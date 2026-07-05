@@ -1,0 +1,38 @@
+==========================================
+  Magma Benchmark  —  sex 03 jul 2026 21:24:13 WEST
+  Video: /home/micron/sav/Trabalhos/2025-2026/Magma/gst-plugin/tests/test_data/ny-walking.mp4
+  Frames per test: 300
+==========================================
+
+─── 1. Decode-only baseline ────────────────────
+  decode + mgmvideoconvert                                 882.3 fps  ( 0.34s)
+
+
+─── 2. Preproc (no inference) ─────────────────
+  preproc (224x224)                                        109.6 fps  ( 2.73s)
+  preproc (640x640)                                        112.7 fps  ( 2.66s)
+
+
+─── 3. YOLOv8n inference ──────────────────────
+  infer only                                                64.1 fps  ( 4.67s)
+  infer + osd                                               63.4 fps  ( 4.73s)
+
+
+─── 4. BiFormer (descriptor) ──────────────────
+  infer only                                                47.8 fps  ( 6.27s)
+  infer + osd                                               47.6 fps  ( 6.29s)
+
+
+─── 6. Inference interval (YOLOv8n + OSD) ────
+  interval=1                                                63.7 fps  ( 4.70s)
+  interval=2                                                70.0 fps  ( 4.28s)
+  interval=4                                                73.6 fps  ( 4.07s)
+  interval=8                                                75.7 fps  ( 3.96s)
+
+
+─── 7. Sink comparison (YOLOv8n + OSD) ───────
+  fakesink (sync=false)                                     63.5 fps  ( 4.72s)
+  fakesink (sync=true)                                      63.6 fps  ( 4.72s)
+
+
+────────────────────────────────────────────────
