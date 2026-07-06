@@ -436,19 +436,13 @@ static GstFlowReturn conv_sys_nv12_to_dmabuf_nv12(GstMagmaVideoConvert* self, Gs
         hipDeviceptr_t src_y = hmeta->d_ptr;
         hipDeviceptr_t src_uv = (hipDeviceptr_t)((uint8_t*)hmeta->d_ptr + (size_t)w * h);
 
-        hipError_t herr = hipMemcpy2D((void*)self->d_image, pitch,
-                                       (const void*)src_y, (size_t)w,
-                                       (size_t)w, (size_t)h,
-                                       hipMemcpyDeviceToDevice);
+        hipError_t herr = hipMemcpy2D((void*)self->d_image, pitch, (const void*)src_y, (size_t)w, (size_t)w, (size_t)h, hipMemcpyDeviceToDevice);
         if (herr != hipSuccess) {
             GST_ERROR_OBJECT(self, "hipMemcpy2D(Y) failed: %s", hipGetErrorString(herr));
             return GST_FLOW_ERROR;
         }
 
-        herr = hipMemcpy2D((void*)((uint8_t*)self->d_image + pitch * h), pitch,
-                           (const void*)src_uv, (size_t)w,
-                           (size_t)w, (size_t)h / 2,
-                           hipMemcpyDeviceToDevice);
+        herr = hipMemcpy2D((void*)((uint8_t*)self->d_image + pitch * h), pitch, (const void*)src_uv, (size_t)w, (size_t)w, (size_t)h / 2, hipMemcpyDeviceToDevice);
         if (herr != hipSuccess) {
             GST_ERROR_OBJECT(self, "hipMemcpy2D(UV) failed: %s", hipGetErrorString(herr));
             return GST_FLOW_ERROR;

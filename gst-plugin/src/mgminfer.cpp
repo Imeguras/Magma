@@ -475,6 +475,7 @@ static void gst_magma_infer_init(GstMagmaInfer* self) {
     self->cached_tensor_dptr = 0;
 
     gst_base_transform_set_in_place(GST_BASE_TRANSFORM(self), TRUE);
+
     /*self->d_parser_input = 0;
 
     hipError_t pe = hipMalloc(&self->d_parser_input, output_bytes);
@@ -661,7 +662,7 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
                     }
                 }
 
-                auto outputs = model->prog.eval(eval_args);
+                auto outputs = model->prog.run_async(eval_args, self->hip_stream);
 
                 if (outputs.empty()) {
 
@@ -678,7 +679,7 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
                 //(void)hipStreamSynchronize(self->hip_stream);
 
                 /* copy output to a fresh parser-owned buffer (MIGraphX internally managed) */
-                gsize output_bytes = output_shape.bytes();
+                // gsize output_bytes = output_shape.bytes();
 
                 /* pe = hipMemcpyDtoD(self->d_parser_input, (hipDeviceptr_t)d_output, output_bytes);
                  if (pe != hipSuccess) {

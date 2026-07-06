@@ -4,7 +4,6 @@
 #include <gst/video/video.h>
 #include <gst/base/gstbasetransform.h>
 #include <hip/hip_runtime.h>
-
 #include "magma-infer-meta.h"
 #include "magma_parser_api.h"
 
@@ -69,6 +68,7 @@ struct _GstMagmaInfer {
     GstMemory* cached_tensor_mem;
     hipExternalMemory_t cached_tensor_ext;
     hipDeviceptr_t cached_tensor_dptr;
+    void* gpu_ctx;
 };
 
 G_END_DECLS
