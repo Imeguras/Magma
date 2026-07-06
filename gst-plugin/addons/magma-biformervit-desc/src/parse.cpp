@@ -33,7 +33,6 @@ extern "C" int magma_parse(MagmaParseParams* p) {
         return 1;
 
     hipStream_t stream = (hipStream_t)p->stream;
-    fprintf(stderr, "PARSE: magma_parse entered, stream=%p d_raw=%p\n", (void*)stream, p->d_raw_output);
 
     int num_classes = (p->num_dims == 2) ? (int)p->output_shape[1] : (int)p->output_shape[0];
 

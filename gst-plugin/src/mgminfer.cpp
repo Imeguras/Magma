@@ -656,7 +656,7 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
                 auto outputs = model->prog.eval(eval_args);
 
                 if (outputs.empty()) {
-                    
+
                     GST_ERROR_OBJECT(self, "MIGraphX returned no outputs");
                     return GST_FLOW_ERROR;
                 }
@@ -686,12 +686,10 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
                 // Sync all GPU operations before parser touches the data
                 (void)hipStreamSynchronize(self->hip_stream);
                 hipError_t sync_err = hipDeviceSynchronize();
-                fprintf(stderr, "MAGMA_DBG: hipDeviceSynchronize after eval = %s\n", hipGetErrorString(sync_err));
+                GST_DEBUG_OBJECT(self, "MAGMA_DBG: hipDeviceSynchronize after eval = %s\n", hipGetErrorString(sync_err));
 
                 /* --- parser dispatch --- */
                 if (self->parser_func) {
-                    fprintf(stderr, "MAGMA_DBG: about to call parser_func=%p\n", (void*)self->parser_func);
-                    fprintf(stderr, "MAGMA_DBG:   d_objects=%p d_num_det=%p d_parser_input=%p\n", (void*)self->d_objects, (void*)self->d_num_det, (void*)d_parser_input);
                     auto lengths = output_shape.lengths();
                     int ndim = (int)lengths.size();
                     std::vector<int64_t> host_lengths(lengths.begin(), lengths.end());
@@ -747,7 +745,7 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
 
                     if (pret != 0) {
                         GST_ERROR_OBJECT(self, "parser failed with code %d", pret);
-                        
+
                         return GST_FLOW_ERROR;
                     }
 
@@ -755,7 +753,7 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
                     (void)hipMemcpyDtoH(&num_detected, self->d_num_det, sizeof(int));
 
                     GST_LOG_OBJECT(self, "frame %u — parser produced %d objects", self->frame_counter, num_detected);
-                    
+
                     return attach_inference_meta(self, buf, num_detected);
 
                 } else {
@@ -766,7 +764,7 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
                     hipError_t herr = hipMemcpyDtoD(self->d_objects, (hipDeviceptr_t)d_output, copy_bytes);
                     if (herr != hipSuccess) {
                         GST_ERROR_OBJECT(self, "hipMemcpyDtoD failed: %s", hipGetErrorString(herr));
-                        
+
                         return GST_FLOW_ERROR;
                     }
 
@@ -786,7 +784,7 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
                 }
             } catch (const std::exception& e) {
                 GST_ERROR_OBJECT(self, "MIGraphX eval failed: %s", e.what());
-                
+
                 return GST_FLOW_ERROR;
             }
         } else {

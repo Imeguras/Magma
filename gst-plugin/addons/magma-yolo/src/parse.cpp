@@ -37,7 +37,6 @@ extern "C" int magma_parse(MagmaParseParams* p) {
         return 1;
 
     hipStream_t stream = (hipStream_t)p->stream;
-    fprintf(stderr, "PARSE: magma_parse entered, stream=%p d_raw=%p\n", (void*)stream, p->d_raw_output);
 
     int N = 1, stride = 1, num_classes = 80;
     bool col_major = false;

@@ -285,8 +285,7 @@ static GstCaps* gst_magma_videoconvert_transform_caps(GstBaseTransform* trans, G
             GstStructure* nd = gst_structure_copy(s);
             gst_structure_set(nd, "format", G_TYPE_STRING, "NV12", NULL);
             gst_caps_append_structure(nv12_dma, nd);
-            gst_caps_set_features(nv12_dma, 0,
-                gst_caps_features_new(GST_CAPS_FEATURE_MEMORY_DMABUF, NULL));
+            gst_caps_set_features(nv12_dma, 0, gst_caps_features_new(GST_CAPS_FEATURE_MEMORY_DMABUF, NULL));
             result = gst_caps_merge(result, nv12_dma);
         }
         // NV12 → add I420 variants (system + DMABuf)
@@ -301,8 +300,7 @@ static GstCaps* gst_magma_videoconvert_transform_caps(GstBaseTransform* trans, G
             GstStructure* id = gst_structure_copy(s);
             gst_structure_set(id, "format", G_TYPE_STRING, "I420", NULL);
             gst_caps_append_structure(i420_dma, id);
-            gst_caps_set_features(i420_dma, 0,
-                gst_caps_features_new(GST_CAPS_FEATURE_MEMORY_DMABUF, NULL));
+            gst_caps_set_features(i420_dma, 0, gst_caps_features_new(GST_CAPS_FEATURE_MEMORY_DMABUF, NULL));
             result = gst_caps_merge(result, i420_dma);
         }
     }
@@ -427,7 +425,7 @@ static GstBuffer* dmabuf_from_gbm_bo(GstMagmaVideoConvert* self, gsize size, Gst
 static GstFlowReturn conv_sys_nv12_to_dmabuf_nv12(GstMagmaVideoConvert* self, GstBuffer* inbuf, GstBuffer* outbuf) {
     if (!self->gpu_ready && !create_gpu_dmabuf(self))
         return GST_FLOW_ERROR;
-
+    fprintf(stderr, "conv_sys_nv12_to_dmabuf_nv12: inbuf=%p outbuf=%p\n", inbuf, outbuf);
     gint w = self->in_width, h = self->in_height;
     gsize pitch = self->gbm_stride;
     gint stride = self->in_stride;
@@ -453,7 +451,12 @@ static GstFlowReturn conv_sys_nv12_to_dmabuf_nv12(GstMagmaVideoConvert* self, Gs
         return GST_FLOW_ERROR;
     gst_buffer_remove_all_memory(outbuf);
     gst_buffer_append_memory(outbuf, gst_buffer_get_memory(out, 0));
-    gst_buffer_copy_into(outbuf, out, GST_BUFFER_COPY_META, 0, -1);
+    {
+        gsize offsets[GST_VIDEO_MAX_PLANES] = {0, (gsize)(pitch * h)};
+        gint strides[GST_VIDEO_MAX_PLANES] = {(gint)pitch, (gint)pitch};
+        if (!gst_buffer_get_video_meta(outbuf))
+            gst_buffer_add_video_meta_full(outbuf, GST_VIDEO_FRAME_FLAG_NONE, GST_VIDEO_FORMAT_NV12, w, h, 2, offsets, strides);
+    }
     gst_buffer_unref(out);
     return GST_FLOW_OK;
 }
@@ -506,9 +509,11 @@ static GstFlowReturn conv_dmabuf_nv12_to_sys_nv12(GstMagmaVideoConvert* self, Gs
                 break;
         if (err == hipSuccess) {
             const guint8* src_uv = (guint8*)d_ptr + src_stride * h;
-            for (gint y = 0; y < h / 2; y++)
-                if ((err = hipMemcpy(out_map.data + dst_stride * h + y * dst_stride, src_uv + y * src_stride, (gsize)w, hipMemcpyDeviceToHost)) != hipSuccess)
+            for (gint y = 0; y < h / 2; y++) {
+                auto t = out_map.data + dst_stride * h + y * dst_stride;
+                if ((err = hipMemcpy(t, src_uv + y * src_stride, (gsize)w, hipMemcpyDeviceToHost)) != hipSuccess)
                     break;
+            }
         }
     }
     gst_buffer_unmap(outbuf, &out_map);
@@ -526,10 +531,7 @@ static GstFlowReturn conv_sys_i420_to_sys_nv12(GstMagmaVideoConvert* self, GstBu
     if (hmeta) {
         // Download Y plane from GPU (stride=w) → host
         std::vector<uint8_t> y_host((size_t)w * h);
-        hipError_t herr = hipMemcpy2D(y_host.data(), (size_t)w,
-                                       hmeta->d_ptr, (size_t)w,
-                                       (size_t)w, (size_t)h,
-                                       hipMemcpyDeviceToHost);
+        hipError_t herr = hipMemcpy2D(y_host.data(), (size_t)w, hmeta->d_ptr, (size_t)w, (size_t)w, (size_t)h, hipMemcpyDeviceToHost);
         if (herr != hipSuccess) {
             GST_ERROR_OBJECT(self, "hipMemcpy2D(Y) CPU path failed: %s", hipGetErrorString(herr));
             return GST_FLOW_ERROR;
@@ -660,7 +662,12 @@ static GstFlowReturn conv_sys_i420_to_dmabuf_nv12(GstMagmaVideoConvert* self, Gs
             return GST_FLOW_ERROR;
         gst_buffer_remove_all_memory(outbuf);
         gst_buffer_append_memory(outbuf, gst_buffer_get_memory(out, 0));
-        gst_buffer_copy_into(outbuf, out, GST_BUFFER_COPY_META, 0, -1);
+        {
+            gsize o[GST_VIDEO_MAX_PLANES] = {0, (gsize)(pitch * h)};
+            gint s[GST_VIDEO_MAX_PLANES] = {(gint)pitch, (gint)pitch};
+            if (!gst_buffer_get_video_meta(outbuf))
+                gst_buffer_add_video_meta_full(outbuf, GST_VIDEO_FRAME_FLAG_NONE, GST_VIDEO_FORMAT_NV12, w, h, 2, o, s);
+        }
         gst_buffer_unref(out);
         return GST_FLOW_OK;
     }
@@ -695,7 +702,12 @@ static GstFlowReturn conv_sys_i420_to_dmabuf_nv12(GstMagmaVideoConvert* self, Gs
         return GST_FLOW_ERROR;
     gst_buffer_remove_all_memory(outbuf);
     gst_buffer_append_memory(outbuf, gst_buffer_get_memory(out, 0));
-    gst_buffer_copy_into(outbuf, out, GST_BUFFER_COPY_META, 0, -1);
+    {
+        gsize o[GST_VIDEO_MAX_PLANES] = {0, (gsize)(pitch * h)};
+        gint s[GST_VIDEO_MAX_PLANES] = {(gint)pitch, (gint)pitch};
+        if (!gst_buffer_get_video_meta(outbuf))
+            gst_buffer_add_video_meta_full(outbuf, GST_VIDEO_FRAME_FLAG_NONE, GST_VIDEO_FORMAT_NV12, w, h, 2, o, s);
+    }
     gst_buffer_unref(out);
     return GST_FLOW_OK;
 }

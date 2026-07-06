@@ -13,16 +13,22 @@
 // --- Host-side error codes (mirrors common.hip defines) ---
 static const char* magma_err_name(int code) {
     switch (code) {
-    case 0: return "NONE";
-    case 1: return "ROI_BOUNDS";
-    default: return "UNKNOWN";
+    case 0:
+        return "NONE";
+    case 1:
+        return "ROI_BOUNDS";
+    default:
+        return "UNKNOWN";
     }
 }
 static const char* magma_err_desc(int code) {
     switch (code) {
-    case 0: return "no error";
-    case 1: return "crop rectangle exceeds source dimensions — tensor is black";
-    default: return "unspecified error";
+    case 0:
+        return "no error";
+    case 1:
+        return "crop rectangle exceeds source dimensions — tensor is black";
+    default:
+        return "unspecified error";
     }
 }
 
@@ -418,7 +424,7 @@ static GstFlowReturn gst_magma_preproc_transform_ip(GstBaseTransform* trans, Gst
     void* d_ptr = (void*)self->d_image;
     int w = self->in_width;
     int h = self->in_height;
-    int stride = self->in_width;
+    int stride = 768; // Forcing it to debug
     GstVideoMeta* vmeta = gst_buffer_get_video_meta(buf);
     if (vmeta && vmeta->stride[0] > 0)
         stride = vmeta->stride[0];
@@ -465,8 +471,7 @@ static GstFlowReturn gst_magma_preproc_transform_ip(GstBaseTransform* trans, Gst
     int host_err = 0;
     hipMemcpyDtoH(&host_err, self->d_error_code, sizeof(int));
     if (host_err) {
-        GST_WARNING_OBJECT(self, "Kernel error [%d] %s: %s",
-            host_err, magma_err_name(host_err), magma_err_desc(host_err));
+        GST_WARNING_OBJECT(self, "Kernel error [%d] %s: %s", host_err, magma_err_name(host_err), magma_err_desc(host_err));
     }
 
     // Attach tensor DMABuf as metadata on the buffer (zero-copy: refs the DMABuf)

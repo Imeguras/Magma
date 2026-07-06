@@ -40,6 +40,7 @@ header() { printf "\n%s\n" "$1" | tee -a "$RESULTS"; }
 rm -f "$RESULTS"
 printf "%s\n" "==========================================" | tee -a "$RESULTS"
 printf "  Magma Benchmark  —  %s\n" "$(date)" | tee -a "$RESULTS"
+printf "  Commit: %s\n" "$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)" | tee -a "$RESULTS"
 printf "  Video: %s\n" "$VIDEO" | tee -a "$RESULTS"
 printf "  Frames per test: %s\n" "$FRAMES" | tee -a "$RESULTS"
 printf "==========================================" | tee -a "$RESULTS"
@@ -78,6 +79,20 @@ header $'\n─── 7. Sink comparison (YOLOv8n + OSD) ───────'
 YOLO_OSD="$DEC ! mgmvideoconvert ! mgmpreproc net-width=640 net-height=640 ! mgminfer model-onnx-file=$ONNX_DIR/yolov8n.onnx model-mxr-file=$MXR_DIR/yolov8n.mxr parser-plugin=$ADDONS/libyolov8-parser.so confidence-threshold=0.51 nms-threshold=0.45 max-detections=1000 ! mgmosd ! mgmvideoconvert"
 run "fakesink (sync=false)" $YOLO_OSD
 run "fakesink (sync=true)"  $YOLO_OSD
+
+MGDEC="filesrc location=$VIDEO ! qtdemux ! h264parse ! mgmh264dec"
+
+header $'\n─── 8. GPU decode (mgmh264dec) baseline ─────────'
+run "decode + mgmvideoconvert (mgpu)" $MGDEC ! mgmvideoconvert
+
+header $'\n─── 9. GPU decode preproc (no inference) ───────'
+run "preproc 224x224 (mgpu)" $MGDEC ! mgmvideoconvert ! mgmpreproc net-width=224 net-height=224
+run "preproc 640x640 (mgpu)" $MGDEC ! mgmvideoconvert ! mgmpreproc net-width=640 net-height=640
+
+header $'\n─── 10. GPU decode YOLOv8n inference ──────────'
+MGYOLO="$MGDEC ! mgmvideoconvert ! mgmpreproc net-width=640 net-height=640 ! mgminfer model-onnx-file=$ONNX_DIR/yolov8n.onnx model-mxr-file=$MXR_DIR/yolov8n.mxr parser-plugin=$ADDONS/libyolov8-parser.so confidence-threshold=0.51 nms-threshold=0.45 max-detections=1000"
+run "infer only (mgpu)" $MGYOLO
+run "infer + osd (mgpu)" $MGYOLO ! mgmosd ! mgmvideoconvert
 
 header $'\n────────────────────────────────────────────────'
 cat "$RESULTS"
