@@ -78,7 +78,7 @@ extern "C" int magma_parse(MagmaParseParams* p) {
     float* d_intermediate = nullptr;
     int* d_counter = nullptr;
     uint8_t* d_suppressed = nullptr;
-    float* d_sorted = nullptr;
+    // float* d_sorted = nullptr;
     size_t inter_bytes = 0;
 
     hipError_t e;
@@ -144,46 +144,20 @@ extern "C" int magma_parse(MagmaParseParams* p) {
     if (num_survivors > N)
         num_survivors = N;
 
-    {
-        size_t surv_bytes = (size_t)num_survivors * 7 * sizeof(float);
-        float* host_survivors = (float*)malloc(surv_bytes);
-        if (!host_survivors)
-            goto fail;
-
-        e = hipMemcpyDtoH(host_survivors, d_intermediate, surv_bytes);
-        if (e != hipSuccess) {
-            free(host_survivors);
-            goto fail;
-        }
-
-        std::sort((Proposal*)host_survivors, (Proposal*)host_survivors + num_survivors, [](const Proposal& a, const Proposal& b) { return a.score > b.score; });
-
-        e = hipMalloc(&d_sorted, surv_bytes);
-        if (e != hipSuccess) {
-            free(host_survivors);
-            goto fail;
-        }
-        e = hipMalloc(&d_suppressed, (size_t)num_survivors);
-        if (e != hipSuccess) {
-            free(host_survivors);
-            goto fail;
-        }
-
-        e = hipMemcpyHtoDAsync(d_sorted, host_survivors, surv_bytes, stream);
-        free(host_survivors);
-        if (e != hipSuccess)
-            goto fail;
-    }
+    e = hipMalloc(&d_suppressed, (size_t)num_survivors);
+    if (e != hipSuccess)
+        goto fail;
 
     // GST_INFO_OBJECT(self, "PARSE: launching nms_suppress M=%d\n", num_survivors);
-    nms_suppress_kernel<<<grid, block, 0, stream>>>(d_sorted, d_suppressed, num_survivors, p->nms_thresh);
+    // Point directly to d_intermediate instead of d_sorted
+    nms_suppress_kernel<<<grid, block, 0, stream>>>(d_intermediate, d_suppressed, num_survivors, p->nms_thresh);
 
     e = hipMemsetAsync(d_counter, 0, sizeof(int), stream);
     if (e != hipSuccess)
         goto fail;
 
     // GST_INFO_OBJECT(self, "PARSE: launching compact, d_objects=%p max_out=%d\n", (void*)p->d_objects, max_out);
-    compact_kernel<<<grid, block, 0, stream>>>(d_sorted, d_suppressed, (float*)p->d_objects, d_counter, num_survivors, net_w, net_h);
+    compact_kernel<<<grid, block, 0, stream>>>(d_intermediate, d_suppressed, (float*)p->d_objects, d_counter, num_survivors, net_w, net_h);
 
     e = hipMemcpyDtoHAsync(p->d_num_detected, d_counter, sizeof(int), stream);
     if (e != hipSuccess)
@@ -194,7 +168,7 @@ done:
     safe_free_device(d_transposed);
     safe_free_device(d_intermediate);
     safe_free_device(d_counter);
-    safe_free_device(d_sorted);
+    // safe_free_device(d_sorted);
     safe_free_device(d_suppressed);
     return (e == hipSuccess) ? 0 : 1;
 
@@ -202,7 +176,7 @@ fail:
     safe_free_device(d_transposed);
     safe_free_device(d_intermediate);
     safe_free_device(d_counter);
-    safe_free_device(d_sorted);
+    // safe_free_device(d_sorted);
     safe_free_device(d_suppressed);
     return 1;
 }

@@ -61,14 +61,14 @@ struct _GstMagmaInfer {
     float confidence_thresh;
     float nms_thresh;
     guint max_detections;
-
-    // Class filter (-1 = all, 0+ = only this class)
+    // hipDeviceptr_t d_parser_input;
+    //  Class filter (-1 = all, 0+ = only this class)
     gint class_filter;
 
     // Cached tensor DMABuf import (stable across frames — avoids per-frame hipImportExternalMemory)
-    GstMemory*        cached_tensor_mem;
+    GstMemory* cached_tensor_mem;
     hipExternalMemory_t cached_tensor_ext;
-    hipDeviceptr_t      cached_tensor_dptr;
+    hipDeviceptr_t cached_tensor_dptr;
 };
 
 G_END_DECLS

@@ -475,6 +475,13 @@ static void gst_magma_infer_init(GstMagmaInfer* self) {
     self->cached_tensor_dptr = 0;
 
     gst_base_transform_set_in_place(GST_BASE_TRANSFORM(self), TRUE);
+    /*self->d_parser_input = 0;
+
+    hipError_t pe = hipMalloc(&self->d_parser_input, output_bytes);
+    if (pe != hipSuccess) {
+        GST_ERROR_OBJECT(self, "hipMalloc(parser_input %zu) failed", output_bytes);
+        // TODO this is such a shit pattern... like "yeah everythings fucked but even though we failed to allocate memory for the parser input buffer, lets just keep going and hope it works out"
+    }*/
 }
 
 /** --- CAPS NEGOTIATION --- */
@@ -672,20 +679,16 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
 
                 /* copy output to a fresh parser-owned buffer (MIGraphX internally managed) */
                 gsize output_bytes = output_shape.bytes();
-                hipDeviceptr_t d_parser_input = 0;
-                hipError_t pe = hipMalloc(&d_parser_input, output_bytes);
-                if (pe != hipSuccess) {
-                    GST_ERROR_OBJECT(self, "hipMalloc(parser_input %zu) failed", output_bytes);
-                    return GST_FLOW_ERROR;
-                }
-                pe = hipMemcpyDtoD(d_parser_input, (hipDeviceptr_t)d_output, output_bytes);
-                if (pe != hipSuccess) {
+
+                /* pe = hipMemcpyDtoD(self->d_parser_input, (hipDeviceptr_t)d_output, output_bytes);
+                 if (pe != hipSuccess) {
                     GST_ERROR_OBJECT(self, "hipMemcpyDtoD(parser_input) failed");
-                    (void)hipFree(d_parser_input);
+                    (void)hipFree(self->d_parser_input);
                     return GST_FLOW_ERROR;
                 }
                 // Sync all GPU operations before parser touches the data
                 //(void)hipStreamSynchronize(self->hip_stream);
+                */
                 /**
 #ifdef __MGM_TRACE_HIP__
                 roctxRangePush("mgminfer: magma_infer_transform_ip|DeviceSynchronize");
@@ -720,7 +723,9 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
                     }
 
                     MagmaParseParams params{};
-                    params.d_raw_output = (const void*)d_parser_input;
+
+                    // params.d_raw_output = (const void*)d_parser_input;
+                    params.d_raw_output = (const void*)d_output;
                     params.output_shape = host_lengths.data();
                     params.num_dims = ndim;
                     params.net_width = net_w;
@@ -738,7 +743,7 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
                     GST_INFO_OBJECT(self, "pre-parser: calling parser_func at %p", (void*)self->parser_func);
 
                     int pret = self->parser_func(&params);
-                    (void)hipFree(d_parser_input);
+                    //(void)hipFree(d_parser_input);
 
                     /* Ensure GPU writes to objects buffer are visible */
                     (void)hipStreamSynchronize(self->hip_stream);
@@ -763,7 +768,6 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
                     GST_LOG_OBJECT(self, "frame %u — parser produced %d objects", self->frame_counter, num_detected);
 
                     return attach_inference_meta(self, buf, num_detected);
-
                 } else {
                     /* --- fallback: legacy hardcoded path (no parser) --- */
                     gsize output_bytes = output_shape.bytes();
