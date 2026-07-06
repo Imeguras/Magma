@@ -37,13 +37,12 @@ run() {
 
 header() { printf "\n%s\n" "$1" | tee -a "$RESULTS"; }
 
-rm -f "$RESULTS"
 printf "%s\n" "==========================================" | tee -a "$RESULTS"
 printf "  Magma Benchmark  —  %s\n" "$(date)" | tee -a "$RESULTS"
 printf "  Commit: %s\n" "$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)" | tee -a "$RESULTS"
 printf "  Video: %s\n" "$VIDEO" | tee -a "$RESULTS"
 printf "  Frames per test: %s\n" "$FRAMES" | tee -a "$RESULTS"
-printf "==========================================" | tee -a "$RESULTS"
+printf "==========================================\n" | tee -a "$RESULTS"
 
 DEC="filesrc location=$VIDEO ! qtdemux ! h264parse ! vah264dec"
 
