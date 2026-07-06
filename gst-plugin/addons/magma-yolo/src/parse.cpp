@@ -93,12 +93,12 @@ extern "C" int magma_parse(MagmaParseParams* p) {
         int tgrid = (total + block - 1) / block;
         // GST_INFO_OBJECT(self, "PARSE: launching transpose (%d blocks, %d threads), d_transposed=%p\n", tgrid, block, (void*)d_transposed);
         transpose_col_to_row_kernel<<<tgrid, block, 0, stream>>>((const float*)p->d_raw_output, d_transposed, N, stride);
-        e = hipStreamSynchronize(stream);
-        if (e != hipSuccess) {
+        // e = hipStreamSynchronize(stream);
+        /*if (e != hipSuccess) {
             fprintf(stderr, "PARSE: transpose kernel launch failed: %s\n", hipGetErrorString(e));
             // GST_ERROR_OBJECT(self, "PARSE: transpose sync failed: %s\n", hipGetErrorString(e));
             goto fail;
-        }
+        }*/
         d_work = d_transposed;
     }
 
@@ -162,7 +162,7 @@ extern "C" int magma_parse(MagmaParseParams* p) {
     e = hipMemcpyDtoHAsync(p->d_num_detected, d_counter, sizeof(int), stream);
     if (e != hipSuccess)
         goto fail;
-    e = hipStreamSynchronize(stream);
+    // e = hipStreamSynchronize(stream);
 
 done:
     safe_free_device(d_transposed);

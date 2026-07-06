@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <xf86drm.h>
+#include "gst/gstpad.h"
 #include "kernel_utils.hpp"
 #include "magma-meta.h"
 
@@ -472,18 +473,34 @@ static GstFlowReturn conv_sys_nv12_to_dmabuf_nv12(GstMagmaVideoConvert* self, Gs
     if (!gst_buffer_map(inbuf, &in_map, GST_MAP_READ))
         return GST_FLOW_ERROR;
 
+    hipError_t ret = hipError_t::hipSuccess;
     if (stride == (gint)pitch) {
-        hipMemcpyAsync(self->d_image, in_map.data, self->gpu_size, hipMemcpyHostToDevice, self->hip_stream);
+        ret = hipMemcpyAsync(self->d_image, in_map.data, self->gpu_size, hipMemcpyHostToDevice, self->hip_stream);
+        // TODO: HOly shit this is annoying
+        if (ret != hipError_t::hipSuccess) {
+            return GST_FLOW_ERROR;
+        }
     } else {
-        for (gint y = 0; y < h; y++)
-            hipMemcpyAsync((guint8*)self->d_image + y * pitch, in_map.data + y * stride, (gsize)w, hipMemcpyHostToDevice, self->hip_stream);
+        for (gint y = 0; y < h; y++) {
+            ret = hipMemcpyAsync((guint8*)self->d_image + y * pitch, in_map.data + y * stride, (gsize)w, hipMemcpyHostToDevice, self->hip_stream);
+            if (ret != hipError_t::hipSuccess) {
+                return GST_FLOW_ERROR;
+            }
+        }
+
         const guint8* src_uv = in_map.data + stride * h;
-        for (gint y = 0; y < h / 2; y++)
-            hipMemcpyAsync((guint8*)self->d_image + pitch * h + y * pitch, src_uv + y * stride, (gsize)w, hipMemcpyHostToDevice, self->hip_stream);
+        for (gint y = 0; y < h / 2; y++) {
+            ret = hipMemcpyAsync((guint8*)self->d_image + pitch * h + y * pitch, src_uv + y * stride, (gsize)w, hipMemcpyHostToDevice, self->hip_stream);
+            if (ret != hipError_t::hipSuccess) {
+                return GST_FLOW_ERROR;
+            }
+        }
     }
     gst_buffer_unmap(inbuf, &in_map);
-    hipStreamSynchronize(self->hip_stream);
-
+    ret = hipStreamSynchronize(self->hip_stream);
+    if (ret != hipError_t::hipSuccess) {
+        return GST_FLOW_ERROR;
+    }
     GstBuffer* out = dmabuf_from_gbm_bo(self, self->gpu_size, GST_VIDEO_FORMAT_NV12, w, h);
     if (!out)
         return GST_FLOW_ERROR;
