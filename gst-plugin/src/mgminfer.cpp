@@ -13,6 +13,7 @@
 #include <gst/allocators/gstdmabuf.h>
 #include <xf86drm.h>
 #include <migraphx/migraphx.hpp>
+#include <rocprofiler-sdk-roctx/roctx.h>
 
 /** --- GOBJECT / GSTREAMER STUFF --- */
 GST_DEBUG_CATEGORY_STATIC(magma_infer_debug);
@@ -667,7 +668,7 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
                 GST_LOG_OBJECT(self, "output ptr=%p", (void*)d_output);
 
                 /* ensure MIGraphX eval is fully done before parser touches the output */
-                (void)hipStreamSynchronize(self->hip_stream);
+                //(void)hipStreamSynchronize(self->hip_stream);
 
                 /* copy output to a fresh parser-owned buffer (MIGraphX internally managed) */
                 gsize output_bytes = output_shape.bytes();
@@ -684,10 +685,17 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
                     return GST_FLOW_ERROR;
                 }
                 // Sync all GPU operations before parser touches the data
-                (void)hipStreamSynchronize(self->hip_stream);
+                //(void)hipStreamSynchronize(self->hip_stream);
+                /**
+#ifdef __MGM_TRACE_HIP__
+                roctxRangePush("mgminfer: magma_infer_transform_ip|DeviceSynchronize");
+#endif
                 hipError_t sync_err = hipDeviceSynchronize();
                 GST_DEBUG_OBJECT(self, "MAGMA_DBG: hipDeviceSynchronize after eval = %s\n", hipGetErrorString(sync_err));
-
+#ifdef __MGM_TRACE_HIP__
+                roctxRangePop();
+#endif
+                */
                 /* --- parser dispatch --- */
                 if (self->parser_func) {
                     auto lengths = output_shape.lengths();

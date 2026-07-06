@@ -34,7 +34,22 @@ END="! fakesink num-buffers=$FRAMES sync=false"
 
 mode="${1:-stats}"
 shift || true
-
+#only run if you are in magma development 2 dirs away from the benchmark directory
+set -eu
+if [ ! "$(basename "$PWD")" = "Magma" ]; then
+  echo "Please run this script from the Magma root directory."
+  exit 1
+else 
+  rm -rf build && \
+  meson setup build \
+    --prefix=/usr \
+    --buildtype=release \
+    -Dc_args="-D__MGM_TRACE_HIP__" \
+    -Dcpp_args="-D__MGM_TRACE_HIP__" && \
+  meson compile -C build && \
+  sudo meson install -C build
+fi
+set +eu
 case "$mode" in
   stats)
     echo "=== rocprof --stats ==="
