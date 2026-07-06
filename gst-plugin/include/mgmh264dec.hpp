@@ -29,6 +29,7 @@ struct _GstMagmaH264Dec {
 
     // current frame info
     gint width, height;
+    GstVideoFormat output_format;
     gboolean configured;
 
     // codec_data (SPS/PPS) in Annex B format — prepended to first bitstream

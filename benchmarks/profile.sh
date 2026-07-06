@@ -27,7 +27,7 @@ FRAMES=100
 PROFILE_DIR="$ROOT/profiles"
 mkdir -p "$PROFILE_DIR"
 
-DEC="filesrc location=$VIDEO ! qtdemux ! h264parse ! vah264dec"
+DEC="filesrc location=$VIDEO ! qtdemux ! h264parse ! mgmh264dec"
 PIPE="$DEC ! mgmvideoconvert ! mgmpreproc net-width=640 net-height=640"
 YOLO="$PIPE ! mgminfer model-onnx-file=$ONNX_DIR/yolov8n.onnx model-mxr-file=$MXR_DIR/yolov8n.mxr parser-plugin=$ADDONS/libyolov8-parser.so confidence-threshold=0.51 nms-threshold=0.45 max-detections=1000 ! mgmosd ! mgmvideoconvert"
 END="! fakesink num-buffers=$FRAMES sync=false"

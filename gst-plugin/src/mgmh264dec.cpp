@@ -91,7 +91,9 @@ static GstStaticPadTemplate sink_template = GST_STATIC_PAD_TEMPLATE(
 
 static GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE(
     "src", GST_PAD_SRC, GST_PAD_ALWAYS,
-    GST_STATIC_CAPS("video/x-raw, format=I420; "
+    GST_STATIC_CAPS("video/x-raw, format=NV12; "
+                    "video/x-raw, format=I420; "
+                    "video/x-raw(memory:DMABuf), format=NV12; "
                     "video/x-raw(memory:DMABuf), format=I420")
 );
 
@@ -241,6 +243,7 @@ static gboolean gst_magma_h264_dec_set_format(GstVideoDecoder* decoder,
     GstVideoCodecState* out = gst_video_decoder_set_output_state(
         decoder, GST_VIDEO_FORMAT_I420, 0, 0, state);
     gst_video_codec_state_unref(out);
+    self->output_format = GST_VIDEO_FORMAT_I420;
 
     self->configured = FALSE;
     return TRUE;
@@ -302,17 +305,19 @@ static hipError_t ensure_nv12_i420_kernel(GstMagmaH264Dec* self) {
 
 // ─── Create output GstBuffer from a decoded HIP frame ───────────────
 // INTERNAL surfaces have separate Y/UV pointers with hardware pitch.
-// We copy into a contiguous I420 buffer (Y + separate U + V planes)
-// in HIP memory, then immediately release the INTERNAL surface.
+// We copy into a contiguous I420 or NV12 buffer in HIP memory, then
+// immediately release the INTERNAL surface.
 static GstBuffer* create_output_buffer(GstMagmaH264Dec* self,
                                         RocVideoDecoder* roc_dec,
                                         uint8_t* y_ptr, uint8_t* uv_ptr,
                                         uint32_t pitch_y, uint32_t pitch_uv,
                                         int64_t pts,
-                                        int width, int height) {
+                                        int width, int height,
+                                        GstVideoFormat out_fmt) {
+    gboolean is_i420 = (out_fmt == GST_VIDEO_FORMAT_I420);
     size_t y_size = (size_t)width * height;
     size_t uv_size = (size_t)(width / 2) * (height / 2);
-    size_t frame_bytes = y_size + 2 * uv_size;
+    size_t frame_bytes = y_size + (is_i420 ? 2 * uv_size : uv_size);
     hipDeviceptr_t d_frame = 0;
     hipError_t herr = hipMalloc(&d_frame, frame_bytes);
     if (herr != hipSuccess) {
@@ -321,8 +326,7 @@ static GstBuffer* create_output_buffer(GstMagmaH264Dec* self,
     }
 
     uint8_t* d_y  = (uint8_t*)d_frame;
-    uint8_t* d_u  = d_y + y_size;
-    uint8_t* d_v  = d_u + uv_size;
+    uint8_t* d_uv = d_y + y_size;
 
     // Copy Y plane: pitch_y → width
     herr = hipMemcpy2D(d_y, width,
@@ -335,14 +339,16 @@ static GstBuffer* create_output_buffer(GstMagmaH264Dec* self,
         return nullptr;
     }
 
-    // Deinterleave UV → separate U and V planes via hiprtc-compiled kernel
-    herr = ensure_nv12_i420_kernel(self);
-    if (herr != hipSuccess) {
-        GST_ERROR_OBJECT(self, "nv12_to_i420 kernel init failed: %s", hipGetErrorString(herr));
-        (void)hipFree(d_frame);
-        return nullptr;
-    }
-    {
+    if (is_i420) {
+        // I420: deinterleave UV → separate U and V planes
+        herr = ensure_nv12_i420_kernel(self);
+        if (herr != hipSuccess) {
+            GST_ERROR_OBJECT(self, "nv12_to_i420 kernel init failed: %s", hipGetErrorString(herr));
+            (void)hipFree(d_frame);
+            return nullptr;
+        }
+        uint8_t* d_u = d_uv;
+        uint8_t* d_v = d_u + uv_size;
         void* args[] = { &d_u, &d_v, &uv_ptr, &pitch_uv, &width, &height };
         int bx = 32, by = 16;
         dim3 grid((width / 2 + bx - 1) / bx, (height / 2 + by - 1) / by);
@@ -350,16 +356,22 @@ static GstBuffer* create_output_buffer(GstMagmaH264Dec* self,
                                       grid.x, grid.y, 1,
                                       bx, by, 1,
                                       0, nullptr, args, nullptr);
-    }
-    if (herr != hipSuccess) {
-        GST_ERROR_OBJECT(self, "nv12_to_i420 launch failed: %s", hipGetErrorString(herr));
-        (void)hipFree(d_frame);
-        return nullptr;
-    }
-    if (herr != hipSuccess) {
-        GST_ERROR_OBJECT(self, "nv12_to_i420_kernel launch failed: %s", hipGetErrorString(herr));
-        (void)hipFree(d_frame);
-        return nullptr;
+        if (herr != hipSuccess) {
+            GST_ERROR_OBJECT(self, "nv12_to_i420 kernel launch failed: %s", hipGetErrorString(herr));
+            (void)hipFree(d_frame);
+            return nullptr;
+        }
+    } else {
+        // NV12: copy UV plane directly (already interleaved from decoder)
+        herr = hipMemcpy2D(d_uv, width,
+                           uv_ptr, pitch_uv,
+                           width, height / 2,
+                           hipMemcpyDeviceToDevice);
+        if (herr != hipSuccess) {
+            GST_ERROR_OBJECT(self, "hipMemcpy2D(UV) failed: %s", hipGetErrorString(herr));
+            (void)hipFree(d_frame);
+            return nullptr;
+        }
     }
 
     // Wait for copies to complete
@@ -472,15 +484,29 @@ static GstFlowReturn gst_magma_h264_dec_handle_frame(GstVideoDecoder* decoder,
     if (w > 0 && h > 0 && (!self->configured || w != self->width || h != self->height)) {
         self->width = w;
         self->height = h;
-        GstVideoCodecState* out = gst_video_decoder_set_output_state(
-            decoder, GST_VIDEO_FORMAT_I420, w, h, nullptr);
-        gst_video_codec_state_unref(out);
+        // Query downstream caps to determine preferred output format
+        GstCaps* nv12_query = gst_caps_new_simple("video/x-raw",
+            "format", G_TYPE_STRING, "NV12",
+            "width", G_TYPE_INT, w, "height", G_TYPE_INT, h, NULL);
+        GstCaps* downstream = gst_pad_peer_query_caps(decoder->srcpad, nv12_query);
+        gboolean use_nv12 = downstream && !gst_caps_is_empty(downstream);
+        if (downstream) gst_caps_unref(downstream);
+        gst_caps_unref(nv12_query);
 
-        // Ensure output state is negotiated
+        GstVideoFormat fmt = use_nv12 ? GST_VIDEO_FORMAT_NV12 : GST_VIDEO_FORMAT_I420;
+        GstVideoCodecState* out = gst_video_decoder_set_output_state(
+            decoder, fmt, w, h, nullptr);
+        gst_video_codec_state_unref(out);
         gst_video_decoder_negotiate(decoder);
 
+        // Store the actual negotiated format
+        GstVideoCodecState* out_state = gst_video_decoder_get_output_state(decoder);
+        self->output_format = GST_VIDEO_INFO_FORMAT(&out_state->info);
+        gst_video_codec_state_unref(out_state);
+        GST_INFO_OBJECT(self, "Resolution set: %dx%d, format: %s",
+            w, h, gst_video_format_to_string(self->output_format));
+
         self->configured = TRUE;
-        GST_INFO_OBJECT(self, "Resolution set: %dx%d", w, h);
     }
 
     // Queue this input frame as pending — it will be matched to a decoder
@@ -501,7 +527,8 @@ static GstFlowReturn gst_magma_h264_dec_handle_frame(GstVideoDecoder* decoder,
                                                     y_ptr, uv_ptr,
                                                     pitch_y, pitch_uv,
                                                     out_pts_roc,
-                                                    self->width, self->height);
+                                                    self->width, self->height,
+                                                    self->output_format);
 
         // Find matching pending frame by PTS
         GstVideoCodecFrame* target = pending_match(self, out_pts_roc);
@@ -548,7 +575,8 @@ static GstFlowReturn gst_magma_h264_dec_drain(GstVideoDecoder* decoder) {
                                                     y_ptr, uv_ptr,
                                                     pitch_y, pitch_uv,
                                                     out_pts_roc,
-                                                    self->width, self->height);
+                                                    self->width, self->height,
+                                                    self->output_format);
 
         GstVideoCodecFrame* target = pending_match(self, out_pts_roc);
         if (!target) {

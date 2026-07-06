@@ -425,9 +425,53 @@ static GstBuffer* dmabuf_from_gbm_bo(GstMagmaVideoConvert* self, gsize size, Gst
 static GstFlowReturn conv_sys_nv12_to_dmabuf_nv12(GstMagmaVideoConvert* self, GstBuffer* inbuf, GstBuffer* outbuf) {
     if (!self->gpu_ready && !create_gpu_dmabuf(self))
         return GST_FLOW_ERROR;
-    fprintf(stderr, "conv_sys_nv12_to_dmabuf_nv12: inbuf=%p outbuf=%p\n", inbuf, outbuf);
     gint w = self->in_width, h = self->in_height;
     gsize pitch = self->gbm_stride;
+
+    // Check for MagmaHipMeta → GPU path
+    MagmaHipMeta* hmeta = magma_buffer_get_hip_meta(inbuf);
+    if (hmeta) {
+        // GPU path: copy NV12 from contiguous GPU buffer to pitched DMABuf
+        // hmeta->d_ptr layout: Y at 0, UV interleaved at w*h
+        hipDeviceptr_t src_y = hmeta->d_ptr;
+        hipDeviceptr_t src_uv = (hipDeviceptr_t)((uint8_t*)hmeta->d_ptr + (size_t)w * h);
+
+        hipError_t herr = hipMemcpy2D((void*)self->d_image, pitch,
+                                       (const void*)src_y, (size_t)w,
+                                       (size_t)w, (size_t)h,
+                                       hipMemcpyDeviceToDevice);
+        if (herr != hipSuccess) {
+            GST_ERROR_OBJECT(self, "hipMemcpy2D(Y) failed: %s", hipGetErrorString(herr));
+            return GST_FLOW_ERROR;
+        }
+
+        herr = hipMemcpy2D((void*)((uint8_t*)self->d_image + pitch * h), pitch,
+                           (const void*)src_uv, (size_t)w,
+                           (size_t)w, (size_t)h / 2,
+                           hipMemcpyDeviceToDevice);
+        if (herr != hipSuccess) {
+            GST_ERROR_OBJECT(self, "hipMemcpy2D(UV) failed: %s", hipGetErrorString(herr));
+            return GST_FLOW_ERROR;
+        }
+
+        (void)hipStreamSynchronize(self->hip_stream);
+
+        GstBuffer* out = dmabuf_from_gbm_bo(self, self->gpu_size, GST_VIDEO_FORMAT_NV12, w, h);
+        if (!out)
+            return GST_FLOW_ERROR;
+        gst_buffer_remove_all_memory(outbuf);
+        gst_buffer_append_memory(outbuf, gst_buffer_get_memory(out, 0));
+        {
+            gsize o[GST_VIDEO_MAX_PLANES] = {0, (gsize)(pitch * h)};
+            gint s[GST_VIDEO_MAX_PLANES] = {(gint)pitch, (gint)pitch};
+            if (!gst_buffer_get_video_meta(outbuf))
+                gst_buffer_add_video_meta_full(outbuf, GST_VIDEO_FRAME_FLAG_NONE, GST_VIDEO_FORMAT_NV12, w, h, 2, o, s);
+        }
+        gst_buffer_unref(out);
+        return GST_FLOW_OK;
+    }
+
+    // ─── CPU upload path: copy host NV12 → GPU NV12 ────────────
     gint stride = self->in_stride;
 
     GstMapInfo in_map;
