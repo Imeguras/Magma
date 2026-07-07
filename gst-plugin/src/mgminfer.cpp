@@ -19,6 +19,9 @@
 GST_DEBUG_CATEGORY_STATIC(magma_infer_debug);
 #define GST_CAT_DEFAULT magma_infer_debug
 
+/* forward declarations */
+static gboolean gst_magma_infer_decide_allocation(GstBaseTransform* trans, GstQuery* query);
+
 enum {
     PROP_0,
     PROP_ONNX_MODEL_PATH,
@@ -88,9 +91,9 @@ static gboolean ensure_objects_output(GstMagmaInfer* self) {
 }
 
 /** --- PAD TEMPLATES --- */
-static GstStaticPadTemplate sink_template = GST_STATIC_PAD_TEMPLATE("sink", GST_PAD_SINK, GST_PAD_ALWAYS, GST_STATIC_CAPS("video/x-raw(memory:DMABuf),format=(string)NV12"));
+static GstStaticPadTemplate sink_template = GST_STATIC_PAD_TEMPLATE("sink", GST_PAD_SINK, GST_PAD_ALWAYS, GST_STATIC_CAPS("video/x-raw(memory:DMABuf),format=(string)NV12; video/x-raw,format=(string)NV12"));
 
-static GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE("src", GST_PAD_SRC, GST_PAD_ALWAYS, GST_STATIC_CAPS("video/x-raw(memory:DMABuf),format=(string)NV12"));
+static GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE("src", GST_PAD_SRC, GST_PAD_ALWAYS, GST_STATIC_CAPS("video/x-raw(memory:DMABuf),format=(string)NV12; video/x-raw,format=(string)NV12"));
 
 /** --- PROPERTIES --- */
 static void gst_magma_infer_set_property(GObject* object, guint prop_id, const GValue* value, GParamSpec* pspec) {
@@ -853,6 +856,7 @@ static void gst_magma_infer_class_init(GstMagmaInferClass* klass) {
     trans->transform_ip = gst_magma_infer_transform_ip;
     trans->start = gst_magma_infer_start;
     trans->stop = gst_magma_infer_stop;
+    trans->decide_allocation = gst_magma_infer_decide_allocation;
 
     magma_inference_meta_get_info();
     magma_tensor_meta_get_info();
@@ -860,8 +864,38 @@ static void gst_magma_infer_class_init(GstMagmaInferClass* klass) {
     GST_DEBUG_CATEGORY_INIT(magma_infer_debug, "magma_infer", 0, "Magma Inference Plugin");
 }
 
+/** --- DECIDE_ALLOCATION: increase buffer pool min-buffers for GPU pipeline cushion --- */
+static gboolean
+gst_magma_infer_decide_allocation(GstBaseTransform* trans, GstQuery* query)
+{
+    GstBufferPool* pool = NULL;
+    GstStructure* config;
+    guint size, min_bufs, max_bufs;
+
+    if (!GST_BASE_TRANSFORM_CLASS(gst_magma_infer_parent_class)->decide_allocation(trans, query))
+        return FALSE;
+
+    if (gst_query_get_n_allocation_pools(query) > 0) {
+        gst_query_parse_nth_allocation_pool(query, 0, &pool, &size, &min_bufs, &max_bufs);
+
+        if (pool) {
+            config = gst_buffer_pool_get_config(pool);
+
+            if (min_bufs < 12)
+                min_bufs = 12;
+
+            gst_buffer_pool_config_set_params(config, NULL, size, min_bufs, max_bufs);
+            gst_buffer_pool_set_config(pool, config);
+            gst_object_unref(pool);
+        }
+    }
+
+    return TRUE;
+}
+
 /** --- PLUGIN REGISTRATION --- */
-static gboolean plugin_init(GstPlugin* plugin) {
+static gboolean plugin_init(GstPlugin* plugin)
+{
     return gst_element_register(plugin, "mgminfer", GST_RANK_NONE, GST_TYPE_MAGMA_INFER);
 }
 
