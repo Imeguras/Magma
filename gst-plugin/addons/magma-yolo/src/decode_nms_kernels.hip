@@ -91,84 +91,40 @@ __device__ static float box_iou(float ax1, float ay1, float ax2, float ay2,
     return uni > 0.0f ? inter / uni : 0.0f;
 }
 
-/* ---- Kernel 2: sort + NMS + compact (single kernel) ---- */
-/*
- * Bitonic sort by score descending makes upper-triangular NMS correct.
- * padded = next power of 2 >= max_out.  Single-block launch.
- */
+/* ---- Kernel 2: NMS + compact (single kernel, no sort) ---- */
 __global__ void nms_compact_kernel(
     const float* __restrict__ detections,  /* [M * 7] row-major */
     float*       __restrict__ objects,     /* [max_out * 6] output buffer */
     int*         __restrict__ out_counter, /* output count */
     const int*   __restrict__ d_num_survivors,  /* M = number of decode survivors */
     int max_out, float nms_thresh,
-    int net_w, int net_h, int padded)
+    int net_w, int net_h)
 {
-    extern __shared__ char shared[];
-    float* s_score = (float*)shared;
-    int* s_idx = (int*)(shared + padded * sizeof(float));
-
-    int tid = threadIdx.x;
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
     int M = min(*d_num_survivors, max_out);
-    if (M == 0) return;
-
-    if (tid < M) {
-        s_score[tid] = detections[tid * 7 + 5];
-        s_idx[tid] = tid;
-    } else if (tid < padded) {
-        s_score[tid] = -1e30f;
-        s_idx[tid] = tid;
-    }
-    __syncthreads();
-
-    /* Bitonic sort by score DESCENDING (highest first) */
-    for (int k = 2; k <= padded; k <<= 1) {
-        for (int j = k >> 1; j > 0; j >>= 1) {
-            int ixj = tid ^ j;
-            if (ixj > tid) {
-                if ((tid & k) == 0) {
-                    if (s_score[tid] < s_score[ixj]) {
-                        float ts = s_score[tid]; s_score[tid] = s_score[ixj]; s_score[ixj] = ts;
-                        int ti = s_idx[tid]; s_idx[tid] = s_idx[ixj]; s_idx[ixj] = ti;
-                    }
-                } else {
-                    if (s_score[tid] > s_score[ixj]) {
-                        float ts = s_score[tid]; s_score[tid] = s_score[ixj]; s_score[ixj] = ts;
-                        int ti = s_idx[tid]; s_idx[tid] = s_idx[ixj]; s_idx[ixj] = ti;
-                    }
-                }
-            }
-            __syncthreads();
-        }
-    }
-
     if (tid >= M) return;
 
-    int src_idx = s_idx[tid];
-    float x1 = detections[src_idx * 7 + 0];
-    float y1 = detections[src_idx * 7 + 1];
-    float x2 = detections[src_idx * 7 + 2];
-    float y2 = detections[src_idx * 7 + 3];
-    int class_id = (int)detections[src_idx * 7 + 4];
-    float score = detections[src_idx * 7 + 5];
+    float x1 = detections[tid * 7 + 0];
+    float y1 = detections[tid * 7 + 1];
+    float x2 = detections[tid * 7 + 2];
+    float y2 = detections[tid * 7 + 3];
+    int class_id = (int)detections[tid * 7 + 4];
+    float score = detections[tid * 7 + 5];
 
-    /* Upper-triangular NMS (correct because sorted by score descending) */
     for (int j = 0; j < tid; j++) {
-        int jdx = s_idx[j];
-        int cj = (int)detections[jdx * 7 + 4];
+        int cj = (int)detections[j * 7 + 4];
         if (class_id != cj) continue;
 
-        float jx1 = detections[jdx * 7 + 0];
-        float jy1 = detections[jdx * 7 + 1];
-        float jx2 = detections[jdx * 7 + 2];
-        float jy2 = detections[jdx * 7 + 3];
+        float jx1 = detections[j * 7 + 0];
+        float jy1 = detections[j * 7 + 1];
+        float jx2 = detections[j * 7 + 2];
+        float jy2 = detections[j * 7 + 3];
 
         float iou = box_iou(x1, y1, x2, y2, jx1, jy1, jx2, jy2);
         if (iou > nms_thresh)
             return;
     }
 
-    /* Survivor: compact to output */
     int idx = atomicAdd(out_counter, 1);
     if (idx >= max_out) return;
 

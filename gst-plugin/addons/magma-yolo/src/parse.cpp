@@ -9,7 +9,7 @@ extern "C" __global__ void transpose_col_to_row_kernel(const float*, float*, int
 
 extern "C" __global__ void decode_filter_kernel(const float*, float*, int*, int, int, int, float, float, int, int);
 
-extern "C" __global__ void nms_compact_kernel(const float*, float*, int*, const int*, int, float, int, int, int);
+extern "C" __global__ void nms_compact_kernel(const float*, float*, int*, const int*, int, float, int, int);
 
 static inline void safe_free_device(void* p) {
     if (p)
@@ -62,8 +62,7 @@ extern "C" int magma_parse(MagmaParseParams* p) {
     int* d_counter = nullptr;
     int* d_out_counter = nullptr;
     size_t inter_bytes = 0;
-    int padded = 1, nms_grid = 0;
-    size_t shared_bytes = 0;
+    int nms_grid = 0;
 
     hipError_t e;
 
@@ -103,20 +102,15 @@ extern "C" int magma_parse(MagmaParseParams* p) {
     if (e != hipSuccess)
         goto fail;
 
-    padded = 1;
-    while (padded < max_out) padded <<= 1;
-    if (padded > 1024)
-        goto fail;
-    shared_bytes = (size_t)padded * (sizeof(float) + sizeof(int));
-    nms_compact_kernel<<<1, padded, shared_bytes, stream>>>(
+    nms_grid = (max_out + block - 1) / block;
+    nms_compact_kernel<<<nms_grid, block, 0, stream>>>(
         d_intermediate,
         (float*)p->d_objects,
         d_out_counter,
         d_counter,
         max_out,
         p->nms_thresh,
-        net_w, net_h,
-        padded);
+        net_w, net_h);
 
     e = hipMemcpyDtoHAsync(p->d_num_detected, d_out_counter, sizeof(int), stream);
     if (e != hipSuccess)
