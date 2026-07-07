@@ -238,9 +238,9 @@ static gboolean gst_magma_h264_dec_set_format(GstVideoDecoder* decoder, GstVideo
         }
     }
 
-    GstVideoCodecState* out = gst_video_decoder_set_output_state(decoder, GST_VIDEO_FORMAT_I420, 0, 0, state);
+    GstVideoCodecState* out = gst_video_decoder_set_output_state(decoder, GST_VIDEO_FORMAT_NV12, 0, 0, state);
     gst_video_codec_state_unref(out);
-    self->output_format = GST_VIDEO_FORMAT_I420;
+    self->output_format = GST_VIDEO_FORMAT_NV12;
 
     self->configured = FALSE;
     return TRUE;

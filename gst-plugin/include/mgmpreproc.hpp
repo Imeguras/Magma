@@ -54,6 +54,10 @@ struct _GstMagmaPreproc {
 
     gboolean imported;
 
+    //     // System memory fallback (CPU→GPU copy)
+    hipDeviceptr_t d_sys_image;
+    gsize d_sys_size;
+
     // Kernel error reporting
     int* d_error_code;
 };

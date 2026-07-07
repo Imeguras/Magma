@@ -243,5 +243,22 @@ else
     mgmkpublish_shlib = disabler()
 endif
 
+# Plugin: mgmdisplay — DRM/KMS display sink
+mgmdisplay_sources = [
+  'src/mgmdisplay.cpp',
+]
+
+mgmdisplay_shlib = shared_library('mgmdisplay',
+  mgmdisplay_sources,
+  c_args: plugin_c_args,
+  cpp_args: ['-std=c++17', '-DMAGMA_KERNEL_SRC_DIR="' + kernel_src_dir + '"'],
+  include_directories: [inc, hip_inc],
+  dependencies: [gst_dep, gstbase_dep, gstvideo_dep, gstallocators_dep,
+                 drm_dep, gbm_dep, hip_host_dep, magma_meta_dep,
+                 kernel_utils_dep],
+  install: true,
+  install_dir: plugins_install_dir,
+)
+
 subdir('addons')
 subdir('tests')

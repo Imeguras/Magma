@@ -228,6 +228,11 @@ static void gst_magma_preproc_finalize(GObject* object) {
         (void)hipDestroyExternalMemory(self->external_memory);
         self->external_memory = nullptr;
     }
+    if (self->d_sys_image) {
+        (void)hipFree(self->d_sys_image);
+        self->d_sys_image = 0;
+        self->d_sys_size = 0;
+    }
     if (self->hip_stream) {
         (void)hipStreamDestroy(self->hip_stream);
         self->hip_stream = nullptr;
@@ -250,9 +255,9 @@ static void gst_magma_preproc_finalize(GObject* object) {
 }
 
 /** --- PAD TEMPLATES --- */
-static GstStaticPadTemplate sink_template = GST_STATIC_PAD_TEMPLATE("sink", GST_PAD_SINK, GST_PAD_ALWAYS, GST_STATIC_CAPS("video/x-raw(memory:DMABuf),format=(string)NV12"));
+static GstStaticPadTemplate sink_template = GST_STATIC_PAD_TEMPLATE("sink", GST_PAD_SINK, GST_PAD_ALWAYS, GST_STATIC_CAPS("video/x-raw(memory:DMABuf),format=(string)NV12; video/x-raw,format=(string)NV12"));
 
-static GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE("src", GST_PAD_SRC, GST_PAD_ALWAYS, GST_STATIC_CAPS("video/x-raw(memory:DMABuf),format=(string)NV12"));
+static GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE("src", GST_PAD_SRC, GST_PAD_ALWAYS, GST_STATIC_CAPS("video/x-raw(memory:DMABuf),format=(string)NV12; video/x-raw,format=(string)NV12"));
 /** --- INIT --- */
 static void gst_magma_preproc_init(GstMagmaPreproc* self) {
     self->net_width = 224;
@@ -268,6 +273,8 @@ static void gst_magma_preproc_init(GstMagmaPreproc* self) {
     self->hip_stream = nullptr;
     self->external_memory = nullptr;
     self->d_image = 0;
+    self->d_sys_image = 0;
+    self->d_sys_size = 0;
     self->imported = FALSE;
 
     self->kernel_module = nullptr;
@@ -352,30 +359,23 @@ static GstFlowReturn gst_magma_preproc_transform_ip(GstBaseTransform* trans, Gst
         }
     }
 
-    // Zero-copy path: MagmaHipMeta from mgmh264dec
+    // Zero-copy path: MagmaHipMeta from mgminfer
     MagmaHipMeta* hip_meta = magma_buffer_get_hip_meta(buf);
     if (hip_meta) {
         self->d_image = hip_meta->d_ptr;
         self->imported = TRUE;
     } else {
-        // Fallback: DMABuf import (for vah264dec compat)
         GstMemory* mem = gst_buffer_peek_memory(buf, 0);
-        if (!gst_is_dmabuf_memory(mem)) {
-            GST_ERROR_OBJECT(self, "mgmpreproc requires MagmaHipMeta or DMABuf memory");
-            return GST_FLOW_ERROR;
-        }
+        if (gst_is_dmabuf_memory(mem)) {
+            // DMABuf import
+            gint fd = gst_dmabuf_memory_get_fd(mem);
 
-        gint fd = gst_dmabuf_memory_get_fd(mem);
+            if (self->external_memory) {
+                (void)hipDestroyExternalMemory(self->external_memory);
+                self->external_memory = nullptr;
+                self->d_image = 0;
+            }
 
-        if (self->external_memory) {
-            hipError_t herr = hipDestroyExternalMemory(self->external_memory);
-            if (herr != hipSuccess)
-                GST_WARNING_OBJECT(self, "hipDestroyExternalMemory failed: %s", hipGetErrorString(herr));
-            self->external_memory = nullptr;
-            self->d_image = 0;
-        }
-
-        {
             hipExternalMemoryHandleDesc desc{};
             desc.type = hipExternalMemoryHandleTypeOpaqueFd;
             desc.handle.fd = fd;
@@ -397,8 +397,34 @@ static GstFlowReturn gst_magma_preproc_transform_ip(GstBaseTransform* trans, Gst
                 self->external_memory = nullptr;
                 return GST_FLOW_ERROR;
             }
+        } else {
+            // System memory fallback: hipMemcpy CPU → GPU
+            gsize total = (gsize)self->in_width * self->in_height * 3 / 2;
+            if (self->d_sys_size < total) {
+                if (self->d_sys_image) {
+                    (void)hipFree(self->d_sys_image);
+                    self->d_sys_image = 0;
+                }
+                hipError_t herr = hipMalloc(&self->d_sys_image, total);
+                if (herr != hipSuccess) {
+                    GST_ERROR_OBJECT(self, "hipMalloc(sys_fb) failed: %s", hipGetErrorString(herr));
+                    return GST_FLOW_ERROR;
+                }
+                self->d_sys_size = total;
+            }
+            GstMapInfo map;
+            if (!gst_buffer_map(buf, &map, GST_MAP_READ)) {
+                GST_ERROR_OBJECT(self, "gst_buffer_map failed for system memory path");
+                return GST_FLOW_ERROR;
+            }
+            hipError_t herr = hipMemcpy(self->d_sys_image, map.data, total, hipMemcpyHostToDevice);
+            gst_buffer_unmap(buf, &map);
+            if (herr != hipSuccess) {
+                GST_ERROR_OBJECT(self, "hipMemcpy(H2D) failed: %s", hipGetErrorString(herr));
+                return GST_FLOW_ERROR;
+            }
+            self->d_image = self->d_sys_image;
         }
-
         self->imported = TRUE;
     }
 
