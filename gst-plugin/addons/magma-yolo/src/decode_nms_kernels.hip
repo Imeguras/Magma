@@ -1,7 +1,6 @@
 #include <hip/hip_runtime.h>
 #include <stdint.h>
 
-//AI made i was too lazy to do this... buy me a coffee though ;) 
 /* 
  * YOLOv8 output layout:
  *   Default (post-ultralytics v8.1): [1, N, 84] row-major — stride = last dim
@@ -11,7 +10,7 @@
 
 extern "C" {
 
-/* ---- Kernel 0: col-major → row-major transpose ---- */
+/* ---- Kernel 0: col-major → row-major transpose (legacy) ---- */
 __global__ void transpose_col_to_row_kernel(
     const float* __restrict__ src,   /* [stride, N] col-major */
     float*       __restrict__ dst,   /* [N, stride] row-major */
@@ -37,14 +36,13 @@ __global__ void decode_filter_kernel(
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= N) return;
 
-    int base = i * stride;   // always row-major (parse.cpp transposes col-major first)
+    int base = i * stride;
 
     float cx = data[base + 0];
     float cy = data[base + 1];
     float w  = fmaxf(data[base + 2], 0.0f);
     float h  = fmaxf(data[base + 3], 0.0f);
 
-    /* sigmoid + argmax over class scores */
     float max_score = -1e10f;
     int max_class = -1;
     for (int c = 0; c < num_classes; c++) {
@@ -59,11 +57,10 @@ __global__ void decode_filter_kernel(
     if (max_score < conf_thresh || max_class < 0)
         return;
 
-    /* cxcywh → xyxy (in input pixel coords) */
-    float x1 = (cx - w / 2.0f); // * net_w;
-    float y1 = (cy - h / 2.0f); // * net_h;
-    float x2 = (cx + w / 2.0f); // * net_w;
-    float y2 = (cy + h / 2.0f); // * net_h;
+    float x1 = (cx - w / 2.0f);
+    float y1 = (cy - h / 2.0f);
+    float x2 = (cx + w / 2.0f);
+    float y2 = (cy + h / 2.0f);
 
     int idx = atomicAdd(counter, 1);
     if (idx >= max_out) return;
@@ -94,65 +91,90 @@ __device__ static float box_iou(float ax1, float ay1, float ax2, float ay2,
     return uni > 0.0f ? inter / uni : 0.0f;
 }
 
-/* ---- Kernel 2: per-class NMS ---- */
-__global__ void nms_suppress_kernel(
-    const float* __restrict__ sorted,  /* [M * 7] */
-    uint8_t*     __restrict__ suppressed,
-    int M, float nms_thresh)
+/* ---- Kernel 2: sort + NMS + compact (single kernel) ---- */
+/*
+ * Bitonic sort by score descending makes upper-triangular NMS correct.
+ * padded = next power of 2 >= max_out.  Single-block launch.
+ */
+__global__ void nms_compact_kernel(
+    const float* __restrict__ detections,  /* [M * 7] row-major */
+    float*       __restrict__ objects,     /* [max_out * 6] output buffer */
+    int*         __restrict__ out_counter, /* output count */
+    const int*   __restrict__ d_num_survivors,  /* M = number of decode survivors */
+    int max_out, float nms_thresh,
+    int net_w, int net_h, int padded)
 {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= M) return;
+    extern __shared__ char shared[];
+    float* s_score = (float*)shared;
+    int* s_idx = (int*)(shared + padded * sizeof(float));
 
-    int ci = (int)sorted[i * 7 + 4];
-    float xi1 = sorted[i * 7 + 0];
-    float yi1 = sorted[i * 7 + 1];
-    float xi2 = sorted[i * 7 + 2];
-    float yi2 = sorted[i * 7 + 3];
+    int tid = threadIdx.x;
+    int M = min(*d_num_survivors, max_out);
+    if (M == 0) return;
 
-    for (int j = 0; j < i; j++) {
-        int cj = (int)sorted[j * 7 + 4];
-        if (ci != cj) continue;
+    if (tid < M) {
+        s_score[tid] = detections[tid * 7 + 5];
+        s_idx[tid] = tid;
+    } else if (tid < padded) {
+        s_score[tid] = -1e30f;
+        s_idx[tid] = tid;
+    }
+    __syncthreads();
 
-        float xj1 = sorted[j * 7 + 0];
-        float yj1 = sorted[j * 7 + 1];
-        float xj2 = sorted[j * 7 + 2];
-        float yj2 = sorted[j * 7 + 3];
-
-        float iou = box_iou(xi1, yi1, xi2, yi2, xj1, yj1, xj2, yj2);
-        if (iou > nms_thresh) {
-            suppressed[i] = 1;
-            return;
+    /* Bitonic sort by score DESCENDING (highest first) */
+    for (int k = 2; k <= padded; k <<= 1) {
+        for (int j = k >> 1; j > 0; j >>= 1) {
+            int ixj = tid ^ j;
+            if (ixj > tid) {
+                if ((tid & k) == 0) {
+                    if (s_score[tid] < s_score[ixj]) {
+                        float ts = s_score[tid]; s_score[tid] = s_score[ixj]; s_score[ixj] = ts;
+                        int ti = s_idx[tid]; s_idx[tid] = s_idx[ixj]; s_idx[ixj] = ti;
+                    }
+                } else {
+                    if (s_score[tid] > s_score[ixj]) {
+                        float ts = s_score[tid]; s_score[tid] = s_score[ixj]; s_score[ixj] = ts;
+                        int ti = s_idx[tid]; s_idx[tid] = s_idx[ixj]; s_idx[ixj] = ti;
+                    }
+                }
+            }
+            __syncthreads();
         }
     }
-    suppressed[i] = 0;
-}
 
-/* ---- Kernel 3: compact survivors → MagmaParsedObject ---- */
-__global__ void compact_kernel(
-    const float* __restrict__ sorted,
-    const uint8_t* __restrict__ suppressed,
-    float*       __restrict__ objects,    /* output buffer, treated as float[6] per entry */
-    int*         __restrict__ out_counter,
-    int M, int net_w, int net_h)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= M) return;
-    if (suppressed[i]) return;
+    if (tid >= M) return;
 
+    int src_idx = s_idx[tid];
+    float x1 = detections[src_idx * 7 + 0];
+    float y1 = detections[src_idx * 7 + 1];
+    float x2 = detections[src_idx * 7 + 2];
+    float y2 = detections[src_idx * 7 + 3];
+    int class_id = (int)detections[src_idx * 7 + 4];
+    float score = detections[src_idx * 7 + 5];
+
+    /* Upper-triangular NMS (correct because sorted by score descending) */
+    for (int j = 0; j < tid; j++) {
+        int jdx = s_idx[j];
+        int cj = (int)detections[jdx * 7 + 4];
+        if (class_id != cj) continue;
+
+        float jx1 = detections[jdx * 7 + 0];
+        float jy1 = detections[jdx * 7 + 1];
+        float jx2 = detections[jdx * 7 + 2];
+        float jy2 = detections[jdx * 7 + 3];
+
+        float iou = box_iou(x1, y1, x2, y2, jx1, jy1, jx2, jy2);
+        if (iou > nms_thresh)
+            return;
+    }
+
+    /* Survivor: compact to output */
     int idx = atomicAdd(out_counter, 1);
+    if (idx >= max_out) return;
 
-    float x1 = sorted[i * 7 + 0];
-    float y1 = sorted[i * 7 + 1];
-    float x2 = sorted[i * 7 + 2];
-    float y2 = sorted[i * 7 + 3];
-    int class_id = (int)sorted[i * 7 + 4];
-    float conf   = sorted[i * 7 + 5];
-
-    /* MagmaParsedObject layout: int class_id, float conf, float x, y, w, h */
-    /* Write as raw bytes so int and float fields go to the right offsets */
     float* o = objects + idx * 6;
-    o[0] = __int_as_float(class_id);  /* class_id as float-bit-pattern (guint on reader side) */
-    o[1] = conf;
+    o[0] = __int_as_float(class_id);
+    o[1] = score;
     o[2] = x1 / (float)net_w;
     o[3] = y1 / (float)net_h;
     o[4] = fmaxf(x2 - x1, 0.0f) / (float)net_w;
