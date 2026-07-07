@@ -144,6 +144,7 @@ static gboolean gst_magma_osd_stop(GstBaseTransform* trans) {
         self->external_memory = nullptr;
         self->d_image = 0;
     }
+    self->cached_dmabuf_mem = nullptr;
 
     if (self->kernel_module) {
         (void)hipModuleUnload(self->kernel_module);
@@ -225,21 +226,22 @@ static GstFlowReturn gst_magma_osd_transform_ip(GstBaseTransform* trans,
         return GST_FLOW_OK;
     }
 
-    /* Lazily destroy previous DMABuf import only when we have a new FD */
-    gint fd = gst_dmabuf_memory_get_fd(mem);
+    /* Cache DMABuf import: only re-import when GstMemory pointer changes */
     gsize bytes = gst_memory_get_sizes(mem, NULL, NULL);
     if (bytes == 0) bytes = (gsize)self->in_width * self->in_height * 3 / 2;
 
-    hipExternalMemory_t new_ext = import_dmabuf(fd, bytes, &self->d_image);
-    if (!new_ext || !self->d_image) {
-        GST_WARNING_OBJECT(self, "failed to import DMABuf to HIP");
-        return GST_FLOW_OK;
+    if (mem != self->cached_dmabuf_mem) {
+        gint fd = gst_dmabuf_memory_get_fd(mem);
+        hipExternalMemory_t new_ext = import_dmabuf(fd, bytes, &self->d_image);
+        if (!new_ext || !self->d_image) {
+            GST_WARNING_OBJECT(self, "failed to import DMABuf to HIP");
+            return GST_FLOW_OK;
+        }
+        if (self->external_memory)
+            (void)hipDestroyExternalMemory(self->external_memory);
+        self->external_memory = new_ext;
+        self->cached_dmabuf_mem = mem;
     }
-
-    /* Swap: retire old import only after new one succeeds */
-    if (self->external_memory)
-        (void)hipDestroyExternalMemory(self->external_memory);
-    self->external_memory = new_ext;
 
     int y_stride = self->in_width;
     int uv_stride = y_stride;
@@ -361,6 +363,7 @@ static void gst_magma_osd_init(GstMagmaOsd* self) {
     self->external_memory = nullptr;
     self->d_image = 0;
     self->d_boxes = nullptr;
+    self->cached_dmabuf_mem = nullptr;
     gst_base_transform_set_in_place(GST_BASE_TRANSFORM(self), TRUE);
     gst_base_transform_set_qos_enabled(GST_BASE_TRANSFORM(self), TRUE);
 }

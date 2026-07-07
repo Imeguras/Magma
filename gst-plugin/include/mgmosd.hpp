@@ -35,9 +35,10 @@ struct _GstMagmaOsd {
     hipFunction_t kernel_func;
     gboolean kernel_ready;
 
-    /* Per-frame DMABuf import */
+    /* Cached DMABuf import (avoid per-frame hipImportExternalMemory) */
     hipExternalMemory_t external_memory;
     hipDeviceptr_t d_image;
+    GstMemory* cached_dmabuf_mem;
 
     /* GPU objects buffer (uploaded per frame) */
     hipDeviceptr_t d_boxes;

@@ -11,6 +11,7 @@
 #include <cstring>
 #include <vector>
 #include <cstdint>
+#include <unistd.h>
 
 GST_DEBUG_CATEGORY_STATIC(magma_h264_dec_debug);
 #define GST_CAT_DEFAULT magma_h264_dec_debug
@@ -371,9 +372,31 @@ static GstBuffer* create_output_buffer(
     // Release the INTERNAL surface back to the decoder pool immediately.
     roc_dec->ReleaseFrame(pts);
 
-    // Small host-side GstBuffer with our hipMalloc'd copy in MagmaHipMeta
+    // Small host-side GstBuffer; attach the GPU memory as both DMABuf (primary)
+    // and MagmaHipMeta (backward compat for plugin rocDecode path).
     GstBuffer* buf = gst_buffer_new_and_alloc(16);
     gst_buffer_memset(buf, 0, 0, 16);
+
+    // Export the hipMalloc'd buffer as a DMABuf FD so downstream can import
+    // it without an extra D2D copy (true zero-copy passthrough).
+    int dmabuf_fd = -1;
+    hipError_t fd_err = hipMemGetHandleForAddressRange(
+        &dmabuf_fd, d_frame, frame_bytes,
+        hipMemRangeHandleTypeDmaBufFd, 0);
+    if (fd_err == hipSuccess && dmabuf_fd >= 0) {
+        GstAllocator* dma_alloc = gst_dmabuf_allocator_new();
+        GstMemory* dmabuf_mem = dma_alloc ? gst_dmabuf_allocator_alloc(dma_alloc, dmabuf_fd, frame_bytes) : nullptr;
+        if (dma_alloc) gst_object_unref(dma_alloc);
+        if (dmabuf_mem) {
+            gst_buffer_append_memory(buf, dmabuf_mem);
+        } else {
+            close(dmabuf_fd);
+            GST_WARNING_OBJECT(self, "gst_dmabuf_allocator_alloc failed");
+        }
+    } else {
+        GST_WARNING_OBJECT(self, "hipMemGetHandleForAddressRange failed: %s",
+                           hipGetErrorString(fd_err));
+    }
 
     auto* ctx = new HipReleaseCtx{d_frame};
     magma_buffer_add_hip_meta(buf, d_frame, hip_release_func, ctx);
