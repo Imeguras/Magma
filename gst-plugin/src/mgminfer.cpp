@@ -91,9 +91,9 @@ static gboolean ensure_objects_output(GstMagmaInfer* self) {
 }
 
 /** --- PAD TEMPLATES --- */
-static GstStaticPadTemplate sink_template = GST_STATIC_PAD_TEMPLATE("sink", GST_PAD_SINK, GST_PAD_ALWAYS, GST_STATIC_CAPS("video/x-raw(memory:DMABuf),format=(string)NV12; video/x-raw,format=(string)NV12"));
+static GstStaticPadTemplate sink_template = GST_STATIC_PAD_TEMPLATE("sink", GST_PAD_SINK, GST_PAD_ALWAYS, GST_STATIC_CAPS("video/x-raw(memory:DMABuf),format=(string)NV12"));
 
-static GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE("src", GST_PAD_SRC, GST_PAD_ALWAYS, GST_STATIC_CAPS("video/x-raw(memory:DMABuf),format=(string)NV12; video/x-raw,format=(string)NV12"));
+static GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE("src", GST_PAD_SRC, GST_PAD_ALWAYS, GST_STATIC_CAPS("video/x-raw(memory:DMABuf),format=(string)NV12"));
 
 /** --- PROPERTIES --- */
 static void gst_magma_infer_set_property(GObject* object, guint prop_id, const GValue* value, GParamSpec* pspec) {
@@ -865,9 +865,7 @@ static void gst_magma_infer_class_init(GstMagmaInferClass* klass) {
 }
 
 /** --- DECIDE_ALLOCATION: increase buffer pool min-buffers for GPU pipeline cushion --- */
-static gboolean
-gst_magma_infer_decide_allocation(GstBaseTransform* trans, GstQuery* query)
-{
+static gboolean gst_magma_infer_decide_allocation(GstBaseTransform* trans, GstQuery* query) {
     GstBufferPool* pool = NULL;
     GstStructure* config;
     guint size, min_bufs, max_bufs;
@@ -894,8 +892,7 @@ gst_magma_infer_decide_allocation(GstBaseTransform* trans, GstQuery* query)
 }
 
 /** --- PLUGIN REGISTRATION --- */
-static gboolean plugin_init(GstPlugin* plugin)
-{
+static gboolean plugin_init(GstPlugin* plugin) {
     return gst_element_register(plugin, "mgminfer", GST_RANK_NONE, GST_TYPE_MAGMA_INFER);
 }
 
