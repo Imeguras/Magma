@@ -1,0 +1,56 @@
+# Magma Doxygen Configuration
+
+DOXYFILE_ENCODING      = UTF-8
+PROJECT_NAME           = "Magma"
+PROJECT_NUMBER         = 1.0.0
+PROJECT_BRIEF          = "GPU-accelerated video analytics framework for AMD ROCm"
+OUTPUT_DIRECTORY       = html
+CREATE_SUBDIRS         = NO
+FULL_PATH_NAMES        = NO
+STRIP_FROM_PATH        = ../
+
+INPUT                  = ../gst-plugin/include ../gst-plugin/src ../gst-plugin/kernels
+RECURSIVE              = YES
+
+FILE_PATTERNS          = *.h *.hpp *.cpp *.c
+EXCLUDE_PATTERNS       = */build/* */builddir/* */build-debug/*
+
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+HTML_OUTPUT            = .
+HTML_EXTRA_STYLESHEET  =
+HTML_HEADER            =
+HTML_FOOTER            =
+HTML_TIMESTAMP         = YES
+
+USE_MATHJAX            = YES
+SEARCHENGINE           = YES
+SERVER_BASED_SEARCH    = NO
+
+EXTRACT_ALL            = YES
+EXTRACT_PRIVATE        = NO
+EXTRACT_STATIC         = YES
+HIDE_UNDOC_MEMBERS     = NO
+HIDE_UNDOC_CLASSES     = NO
+
+INPUT_ENCODING         = UTF-8
+SOURCE_BROWSER         = YES
+INLINE_SOURCES         = NO
+REFERENCED_BY_RELATION = YES
+REFERENCES_RELATION    = YES
+
+ENABLE_PREPROCESSING   = YES
+MACRO_EXPANSION        = YES
+EXPAND_ONLY_PREDEF     = NO
+PREDEFINED             = G_BEGIN_DECLS= G_END_DECLS= __cplusplus=
+
+HAVE_DOT               = YES
+DOT_NUM_THREADS        = 0
+CALL_GRAPH             = NO
+CALLER_GRAPH           = NO
+CLASS_DIAGRAMS         = YES
+DOT_IMAGE_FORMAT       = svg
+INTERACTIVE_SVG        = YES
+DOT_GRAPH_MAX_NODES    = 50
+
+ALIASES                = "property=\par <b>GObject property:</b>"

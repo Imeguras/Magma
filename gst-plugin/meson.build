@@ -35,7 +35,7 @@ magma_meta_shlib = shared_library('magma-meta',
   c_args: plugin_c_args,
   cpp_args: ['-std=c++17'],
   include_directories: [inc, hip_inc],
-  dependencies: [gst_dep],
+  dependencies: [gst_dep, hip_host_dep],
   install: true,
   install_dir: get_option('libdir'),
 )
@@ -74,7 +74,7 @@ mgminfer_shlib = shared_library('mgminfer',
   include_directories: [inc, hip_inc],
   dependencies: [gst_dep, gstbase_dep, gstvideo_dep, gstallocators_dep,
                  kernel_utils_dep, gbm_dep, drm_dep, hip_host_dep,
-                 migraphx_dep, magma_meta_dep],
+                 migraphx_dep, magma_meta_dep, roctx_dep],
   install: true,
   install_dir: plugins_install_dir,
 )
@@ -98,6 +98,31 @@ mgmpreproc_shlib = shared_library('mgmpreproc',
   install_dir: plugins_install_dir,
 )
 
+# ─── rocDecode dependency ──────────────────────────────────────────────
+rocdecode_inc = include_directories('/opt/rocm/share/rocdecode/utils',
+                                     '/opt/rocm/share/rocdecode/utils/rocvideodecode')
+rocdecode_dep = declare_dependency(
+  include_directories: rocdecode_inc,
+  dependencies: cpp.find_library('rocdecode', dirs: '/opt/rocm/lib'),
+)
+
+# Plugin: mgmh264dec
+mgmh264dec_sources = [
+  'src/mgmh264dec.cpp',
+  'src/roc_video_dec.cpp',
+]
+
+mgmh264dec_shlib = shared_library('mgmh264dec',
+  mgmh264dec_sources,
+  c_args: plugin_c_args,
+  cpp_args: ['-std=c++17'],
+  include_directories: [inc, hip_inc, rocdecode_inc],
+  dependencies: [gst_dep, gstvideo_dep, gstallocators_dep,
+                 hip_host_dep, hiprtc_dep, rocdecode_dep, magma_meta_dep, roctx_dep],
+  install: true,
+  install_dir: plugins_install_dir,
+)
+
 # Plugin: mgmvideoconvert
 mgmvideoconvert_sources = [
   'src/mgmvideoconvert.cpp',
@@ -106,10 +131,14 @@ mgmvideoconvert_sources = [
 mgmvideoconvert_shlib = shared_library('mgmvideoconvert',
   mgmvideoconvert_sources,
   c_args: plugin_c_args,
-  cpp_args: ['-std=c++17'],
+  cpp_args: [
+    '-std=c++17',
+    '-DMAGMA_KERNEL_SRC_DIR="' + kernel_src_dir + '"',
+  ],
   include_directories: [inc, hip_inc],
   dependencies: [gst_dep, gstbase_dep, gstvideo_dep, gstallocators_dep,
-                 hip_host_dep, gbm_dep, drm_dep],
+                 hip_host_dep, hiprtc_dep, gbm_dep, drm_dep, magma_meta_dep,
+                 kernel_utils_dep],
   install: true,
   install_dir: plugins_install_dir,
 )
@@ -145,7 +174,7 @@ mgmosd_shlib = shared_library('mgmosd',
 )
 
 # Install kernel sources for runtime JIT loading on deployed systems
-install_data('kernels/preproc_kernels.hip', 'kernels/common.hip', 'kernels/dummy_infer.hip', 'kernels/osd_kernels.hip',
+install_data('kernels/preproc_kernels.hip', 'kernels/common.hip', 'kernels/dummy_infer.hip', 'kernels/osd_kernels.hip', 'kernels/videoconvert_kernels.hip',
   install_dir: get_option('datadir') / 'magma' / 'kernels',
 )
 
@@ -213,6 +242,23 @@ if rdkafka_dep.found()
 else
     mgmkpublish_shlib = disabler()
 endif
+
+# Plugin: mgmdisplay — DRM/KMS display sink
+mgmdisplay_sources = [
+  'src/mgmdisplay.cpp',
+]
+
+mgmdisplay_shlib = shared_library('mgmdisplay',
+  mgmdisplay_sources,
+  c_args: plugin_c_args,
+  cpp_args: ['-std=c++17', '-DMAGMA_KERNEL_SRC_DIR="' + kernel_src_dir + '"'],
+  include_directories: [inc, hip_inc],
+  dependencies: [gst_dep, gstbase_dep, gstvideo_dep, gstallocators_dep,
+                 drm_dep, gbm_dep, hip_host_dep, magma_meta_dep,
+                 kernel_utils_dep],
+  install: true,
+  install_dir: plugins_install_dir,
+)
 
 subdir('addons')
 subdir('tests')

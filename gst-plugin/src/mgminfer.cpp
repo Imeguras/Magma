@@ -1,6 +1,7 @@
 #include "mgminfer.hpp"
 #include "magma-meta.h"
 #include "kernel_utils.hpp"
+#include "magma-hip-stream.hpp"
 
 #include <string>
 #include <cstring>
@@ -13,14 +14,19 @@
 #include <gst/allocators/gstdmabuf.h>
 #include <xf86drm.h>
 #include <migraphx/migraphx.hpp>
+#include <rocprofiler-sdk-roctx/roctx.h>
 
 /** --- GOBJECT / GSTREAMER STUFF --- */
 GST_DEBUG_CATEGORY_STATIC(magma_infer_debug);
 #define GST_CAT_DEFAULT magma_infer_debug
 
+/* forward declarations */
+static gboolean gst_magma_infer_decide_allocation(GstBaseTransform* trans, GstQuery* query);
+
 enum {
     PROP_0,
-    PROP_MODEL_PATH,
+    PROP_ONNX_MODEL_PATH,
+    PROP_MXR_MODEL_PATH,
     PROP_INFERENCE_INTERVAL,
     PROP_PARSER_PLUGIN,
     PROP_PARSER_FUNC,
@@ -59,6 +65,15 @@ struct MigraphXModel {
 } // anonymous namespace
 
 /** --- OUTPUT OBJECTS GPU BUFFER --- */
+/**
+ * @brief Ensure GPU output buffers for detection objects are allocated.
+ *
+ * Allocates max_detections * sizeof(MagmaInferObjectGPU) on the GPU
+ * plus a GPU counter. Reallocates if max_objects has changed.
+ *
+ * @param self Inference element
+ * @return TRUE on success
+ */
 static gboolean ensure_objects_output(GstMagmaInfer* self) {
     if (self->d_objects)
         return TRUE;
@@ -95,10 +110,15 @@ static void gst_magma_infer_set_property(GObject* object, guint prop_id, const G
     GstMagmaInfer* self = GST_MAGMA_INFER(object);
 
     switch (prop_id) {
-    case PROP_MODEL_PATH:
-        g_free(self->model_path);
-        self->model_path = g_value_dup_string(value);
-        GST_INFO_OBJECT(self, "model path set to %s", self->model_path);
+    case PROP_ONNX_MODEL_PATH:
+        g_free(self->onnx_model_path);
+        self->onnx_model_path = g_value_dup_string(value);
+        GST_INFO_OBJECT(self, "ONNX model path set to %s", self->onnx_model_path);
+        break;
+    case PROP_MXR_MODEL_PATH:
+        g_free(self->mxr_model_path);
+        self->mxr_model_path = g_value_dup_string(value);
+        GST_INFO_OBJECT(self, "MXR model path set to %s", self->mxr_model_path);
         break;
     case PROP_INFERENCE_INTERVAL:
         self->inference_interval = g_value_get_uint(value);
@@ -136,8 +156,11 @@ static void gst_magma_infer_get_property(GObject* object, guint prop_id, GValue*
     GstMagmaInfer* self = GST_MAGMA_INFER(object);
 
     switch (prop_id) {
-    case PROP_MODEL_PATH:
-        g_value_set_string(value, self->model_path);
+    case PROP_ONNX_MODEL_PATH:
+        g_value_set_string(value, self->onnx_model_path);
+        break;
+    case PROP_MXR_MODEL_PATH:
+        g_value_set_string(value, self->mxr_model_path);
         break;
     case PROP_INFERENCE_INTERVAL:
         g_value_set_uint(value, self->inference_interval);
@@ -166,7 +189,12 @@ static void gst_magma_infer_get_property(GObject* object, guint prop_id, GValue*
     }
 }
 
-/** --- FINALIZE --- */
+/**
+ * @brief Finalize the GstMagmaInfer object, releasing all allocated resources.
+ *
+ * @return void
+ *
+ */
 static void gst_magma_infer_finalize(GObject* object) {
     GstMagmaInfer* self = GST_MAGMA_INFER(object);
 
@@ -182,10 +210,12 @@ static void gst_magma_infer_finalize(GObject* object) {
         self->d_num_det = nullptr;
     }
 
-    if (self->hip_stream) {
-        (void)hipStreamDestroy(self->hip_stream);
-        self->hip_stream = nullptr;
+    if (self->cached_tensor_ext) {
+        (void)hipDestroyExternalMemory(self->cached_tensor_ext);
+        self->cached_tensor_ext = nullptr;
     }
+    self->cached_tensor_dptr = 0;
+    self->cached_tensor_mem = NULL;
 
     if (self->migraphx_model) {
         delete static_cast<MigraphXModel*>(self->migraphx_model);
@@ -197,9 +227,14 @@ static void gst_magma_infer_finalize(GObject* object) {
         self->parser_handle = nullptr;
     }
     self->parser_func = nullptr;
-
-    g_free(self->model_path);
-    self->model_path = NULL;
+    if (self->mxr_model_path) {
+        g_free(self->mxr_model_path);
+        self->mxr_model_path = NULL;
+    }
+    if (self->onnx_model_path) {
+        g_free(self->onnx_model_path);
+        self->onnx_model_path = NULL;
+    }
     g_free(self->parser_plugin_path);
     self->parser_plugin_path = NULL;
     g_free(self->parser_func_name);
@@ -207,40 +242,90 @@ static void gst_magma_infer_finalize(GObject* object) {
 
     G_OBJECT_CLASS(gst_magma_infer_parent_class)->finalize(object);
 }
-
+// this should be split up so its easier to read but im too lazy and with c like functions its always annoying
+/**
+ * @brief Start the GstMagmaInfer element as per gstreamer convention, loading the model and parser plugin if necessary.
+ *        Starts by trying to load a pre-compiled MIGraphX model (.mxr). If that fails, it falls back to compiling from an ONNX model (.onnx) if both are provided.
+ *
+ * @return TRUE if successful, FALSE otherwise.
+ *
+ */
 static gboolean gst_magma_infer_start(GstBaseTransform* trans) {
     GstMagmaInfer* self = GST_MAGMA_INFER(trans);
-    fprintf(stderr, "MAGMA_DBG: mgminfer start() called, model_path=%s parser=%s\n", self->model_path ? self->model_path : "(null)", self->parser_plugin_path ? self->parser_plugin_path : "(null)");
+    GST_DEBUG_OBJECT(self,
+                     "mgminfer start() called, mxr_model_path=%s onnx_model_path=%s parser=%s\n",
+                     self->mxr_model_path ? self->mxr_model_path : "(null)",
+                     self->onnx_model_path ? self->onnx_model_path : "(null)",
+                     self->parser_plugin_path ? self->parser_plugin_path : "(null)");
 
-    if (!self->model_path) {
-        GST_WARNING_OBJECT(self, "no model-path set — MIGraphX model not loaded");
-        return TRUE;
-    }
-
-    auto path = std::string(self->model_path);
-    auto model = std::make_unique<MigraphXModel>();
-    try {
-        if (path.size() >= 4 && path.substr(path.size() - 4) == ".mxr") {
-            model->prog = migraphx::load(path.c_str());
-            GST_INFO_OBJECT(self, "loaded pre-compiled MIGraphX model from %s", path.c_str());
-
-        } else if (path.size() >= 5 && path.substr(path.size() - 5) == ".onnx") {
-            model->prog = migraphx::parse_onnx(path.c_str());
-            GST_INFO_OBJECT(self, "parsed ONNX model from %s, compiling for GPU...", path.c_str());
-            // TODO: yep this might need change if we add multiple GPU's, some people are born rich ig
-            model->prog.compile(migraphx::target("gpu"));
-            GST_INFO_OBJECT(self, "MIGraphX compiled for GPU");
-        } else {
-
-            GST_ERROR_OBJECT(self, "unsupported model file extension (must be .mxr or .onnx)");
-            return FALSE;
-        }
-    } catch (const std::exception& e) {
-        GST_ERROR_OBJECT(self, "MIGraphX model load failed: %s", e.what());
+    if (!self->mxr_model_path && !self->onnx_model_path) {
+        GST_ERROR_OBJECT(self, "Neither mxr-model-path nor onnx-model-path was provided. At least one is required.");
         return FALSE;
     }
 
-    /* load parser plugin if configured (after MIGraphX init, to avoid conflicts) */
+    std::string mxr_path = self->mxr_model_path ? std::string(self->mxr_model_path) : std::string();
+    std::string onnx_path = self->onnx_model_path ? std::string(self->onnx_model_path) : std::string();
+
+    // Determine the ultimate file path we intend to save the compiled model to
+    std::string target_mxr_save_path = mxr_path;
+    if (target_mxr_save_path.empty() && !onnx_path.empty()) {
+        target_mxr_save_path = onnx_path.substr(0, onnx_path.size() - 5) + ".mxr";
+    }
+
+    auto model = std::make_unique<MigraphXModel>();
+    bool model_loaded = false;
+
+    if (!mxr_path.empty()) {
+        try {
+            GST_INFO_OBJECT(self, "Attempting to load pre-compiled MIGraphX model from %s", mxr_path.c_str());
+            model->prog = migraphx::load(mxr_path.c_str());
+            GST_INFO_OBJECT(self, "Successfully loaded pre-compiled MIGraphX model from %s", mxr_path.c_str());
+            model_loaded = true;
+        } catch (const std::exception& e) {
+            GST_WARNING_OBJECT(self, "Failed to load pre-compiled model from %s (Error: %s).", mxr_path.c_str(), e.what());
+            if (onnx_path.empty()) {
+                GST_ERROR_OBJECT(self, "No .onnx fallback provided. Cannot recover.");
+                return FALSE;
+            }
+            GST_INFO_OBJECT(self, "Falling back to compiling from ONNX...");
+        }
+    }
+
+    // Womp womp... you get to compile it from ONNX.
+    if (!model_loaded) {
+        if (onnx_path.empty()) {
+            GST_ERROR_OBJECT(self, "Could not load .mxr model and no fallback .onnx path was provided.");
+            return FALSE;
+        }
+
+        try {
+            GST_INFO_OBJECT(self, "Parsing ONNX model from %s...", onnx_path.c_str());
+            auto prog_tmp = migraphx::parse_onnx(onnx_path.c_str());
+
+            GST_INFO_OBJECT(self, "Compiling ONNX model for GPU target...");
+            prog_tmp.compile(migraphx::target("gpu"));
+
+            // Move it into our runtime container
+            model->prog = std::move(prog_tmp);
+            model_loaded = true;
+
+            // Generate/Overwrite the target .mxr path so it's production-ready for next time
+            try {
+                GST_INFO_OBJECT(self, "Saving/Overwriting optimized MIGraphX model to %s", target_mxr_save_path.c_str());
+                migraphx::save(model->prog, target_mxr_save_path.c_str());
+                GST_INFO_OBJECT(self, "Saved compiled model successfully.");
+            } catch (const std::exception& save_ex) {
+                // If saving fails (e.g. read-only directory), don't crash the pipeline, we can still run in RAM!
+                GST_WARNING_OBJECT(self, "Model compiled successfully but failed to serialize to disk: %s", save_ex.what());
+            }
+
+        } catch (const std::exception& e) {
+            GST_ERROR_OBJECT(self, "MIGraphX ONNX parsing/compilation failed: %s", e.what());
+            return FALSE;
+        }
+    }
+
+    /* Second step load parser plugin if configured (after MIGraphX init, to avoid conflicts) */
     if (self->parser_plugin_path && !self->parser_handle) {
         GST_INFO_OBJECT(self, "loading parser plugin: %s", self->parser_plugin_path);
         self->parser_handle = dlopen(self->parser_plugin_path, RTLD_NOW | RTLD_LOCAL);
@@ -335,10 +420,13 @@ static gboolean gst_magma_infer_stop(GstBaseTransform* trans) {
     }
     GST_INFO_OBJECT(self, "MIGraphX model unloaded");
 
-    if (self->hip_stream) {
-        (void)hipStreamDestroy(self->hip_stream);
-        self->hip_stream = nullptr;
+    /* destroy cached tensor DMABuf import */
+    if (self->cached_tensor_ext) {
+        (void)hipDestroyExternalMemory(self->cached_tensor_ext);
+        self->cached_tensor_ext = nullptr;
     }
+    self->cached_tensor_dptr = 0;
+    self->cached_tensor_mem = NULL;
 
     if (self->parser_handle) {
         dlclose(self->parser_handle);
@@ -347,8 +435,6 @@ static gboolean gst_magma_infer_stop(GstBaseTransform* trans) {
         GST_INFO_OBJECT(self, "parser plugin unloaded");
     }
 
-    GST_INFO_OBJECT(self, "HIP stream destroyed");
-
     self->model_loaded = FALSE;
 
     return TRUE;
@@ -356,7 +442,8 @@ static gboolean gst_magma_infer_stop(GstBaseTransform* trans) {
 
 /** --- INIT --- */
 static void gst_magma_infer_init(GstMagmaInfer* self) {
-    self->model_path = NULL;
+    self->onnx_model_path = NULL;
+    self->mxr_model_path = NULL;
     self->inference_interval = 1;
     self->frame_counter = 0;
     self->in_width = 0;
@@ -383,7 +470,20 @@ static void gst_magma_infer_init(GstMagmaInfer* self) {
 
     self->class_filter = -1; /* -1 = no filter */
 
+    /* DMABuf import cache */
+    self->cached_tensor_mem = NULL;
+    self->cached_tensor_ext = nullptr;
+    self->cached_tensor_dptr = 0;
+
     gst_base_transform_set_in_place(GST_BASE_TRANSFORM(self), TRUE);
+
+    /*self->d_parser_input = 0;
+
+    hipError_t pe = hipMalloc(&self->d_parser_input, output_bytes);
+    if (pe != hipSuccess) {
+        GST_ERROR_OBJECT(self, "hipMalloc(parser_input %zu) failed", output_bytes);
+        // TODO this is such a shit pattern... like "yeah everythings fucked but even though we failed to allocate memory for the parser input buffer, lets just keep going and hope it works out"
+    }*/
 }
 
 /** --- CAPS NEGOTIATION --- */
@@ -439,6 +539,18 @@ static hipExternalMemory_t import_dmabuf_to_hip(int dmabuf_fd, gsize size, hipDe
 /** --- dummy kernel fallback (removed — model must succeed or fail) --- */
 
 /** --- attach a single detection to the buffer --- */
+/**
+ * @brief Attach a MagmaInferenceMeta with detection results to the buffer.
+ *
+ * Creates the meta, transfers GPU object count to CPU, and copies
+ * MagmaInferObjectGPU entries from the GPU output buffer into a
+ * GPtrArray of CPU-side MagmaInferObject for downstream elements.
+ *
+ * @param self        Inference element
+ * @param buf         Target buffer
+ * @param num_objects Number of detected objects on GPU
+ * @return GST_FLOW_OK on success
+ */
 static GstFlowReturn attach_inference_meta(GstMagmaInfer* self, GstBuffer* buf, gint num_objects) {
     MagmaInferenceMeta* m = magma_buffer_add_inference_meta(buf, self->in_width, self->in_height);
     if (!m) {
@@ -495,6 +607,18 @@ static GstFlowReturn attach_inference_meta(GstMagmaInfer* self, GstBuffer* buf, 
 }
 
 /** --- TRANSFORM --- */
+/**
+ * @brief Main transform entry point — run inference on the frame.
+ *
+ * Reads the MagmaTensorMeta (preprocessed tensor) from the input
+ * buffer, runs the MIGraphX model, invokes the parser plugin to
+ * decode raw output into detection objects, and attaches a
+ * MagmaInferenceMeta with the results.
+ *
+ * @param trans The base transform element
+ * @param buf   Input buffer (must have MagmaTensorMeta)
+ * @return GST_FLOW_OK on success
+ */
 static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBuffer* buf) {
     GstMagmaInfer* self = GST_MAGMA_INFER(trans);
 
@@ -508,11 +632,11 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
         return GST_FLOW_OK;
     }
 
-    /* ensure stream */
+    /* ensure stream (shared with mgmpreproc — guarantees GPU ordering without CPU sync) */
     if (!self->hip_stream) {
-        hipError_t err = hipStreamCreate(&self->hip_stream);
-        if (err != hipSuccess) {
-            GST_ERROR_OBJECT(self, "hipStreamCreate failed: %s", hipGetErrorString(err));
+        self->hip_stream = magma_get_shared_hip_stream();
+        if (!self->hip_stream) {
+            GST_ERROR_OBJECT(self, "magma_get_shared_hip_stream failed");
             return GST_FLOW_ERROR;
         }
     }
@@ -524,15 +648,32 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
         if (model->input_lengths.size() == 4 && (int)model->input_lengths[0] == 1 && (int)model->input_lengths[1] == tmeta->channels && (int)model->input_lengths[2] == tmeta->height &&
             (int)model->input_lengths[3] == tmeta->width) {
 
-            /* import tensor DMABuf → HIP */
-            int tensor_fd = gst_dmabuf_memory_get_fd(tmeta->tensor_mem);
-            gsize tensor_bytes = gst_memory_get_sizes(tmeta->tensor_mem, NULL, NULL);
-            hipDeviceptr_t d_tensor = 0;
-            hipExternalMemory_t tensor_ext = import_dmabuf_to_hip(tensor_fd, tensor_bytes, &d_tensor);
-            if (!tensor_ext || !d_tensor) {
-                GST_ERROR_OBJECT(self, "failed to import tensor DMABuf to HIP");
-                return GST_FLOW_ERROR;
+            /* import tensor DMABuf → HIP (cached — tensor fd is stable across frames) */
+            if (tmeta->tensor_mem != self->cached_tensor_mem) {
+                if (self->cached_tensor_ext) {
+                    (void)hipDestroyExternalMemory(self->cached_tensor_ext);
+                    self->cached_tensor_ext = nullptr;
+                }
+                self->cached_tensor_dptr = 0;
+                self->cached_tensor_mem = NULL;
+
+                int tensor_fd = gst_dmabuf_memory_get_fd(tmeta->tensor_mem);
+                if (tensor_fd < 0) {
+                    GST_ERROR_OBJECT(self, "failed to get tensor DMABuf fd");
+                    return GST_FLOW_ERROR;
+                }
+                gsize tensor_bytes = gst_memory_get_sizes(tmeta->tensor_mem, NULL, NULL);
+                hipExternalMemory_t ext = import_dmabuf_to_hip(tensor_fd, tensor_bytes, &self->cached_tensor_dptr);
+                close(tensor_fd);
+                if (!ext || !self->cached_tensor_dptr) {
+                    self->cached_tensor_dptr = 0;
+                    GST_ERROR_OBJECT(self, "failed to import tensor DMABuf to HIP");
+                    return GST_FLOW_ERROR;
+                }
+                self->cached_tensor_ext = ext;
+                self->cached_tensor_mem = tmeta->tensor_mem;
             }
+            hipDeviceptr_t d_tensor = self->cached_tensor_dptr;
 
             /* build argument map — pass all params */
             try {
@@ -546,10 +687,10 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
                     }
                 }
 
-                auto outputs = model->prog.eval(eval_args);
+                auto outputs = model->prog.run_async(eval_args, self->hip_stream);
 
                 if (outputs.empty()) {
-                    (void)hipDestroyExternalMemory(tensor_ext);
+
                     GST_ERROR_OBJECT(self, "MIGraphX returned no outputs");
                     return GST_FLOW_ERROR;
                 }
@@ -560,31 +701,32 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
                 GST_LOG_OBJECT(self, "output ptr=%p", (void*)d_output);
 
                 /* ensure MIGraphX eval is fully done before parser touches the output */
-                (void)hipStreamSynchronize(self->hip_stream);
+                //(void)hipStreamSynchronize(self->hip_stream);
 
                 /* copy output to a fresh parser-owned buffer (MIGraphX internally managed) */
-                gsize output_bytes = output_shape.bytes();
-                hipDeviceptr_t d_parser_input = 0;
-                hipError_t pe = hipMalloc(&d_parser_input, output_bytes);
-                if (pe != hipSuccess) {
-                    GST_ERROR_OBJECT(self, "hipMalloc(parser_input %zu) failed", output_bytes);
-                    return GST_FLOW_ERROR;
-                }
-                pe = hipMemcpyDtoD(d_parser_input, (hipDeviceptr_t)d_output, output_bytes);
-                if (pe != hipSuccess) {
+                // gsize output_bytes = output_shape.bytes();
+
+                /* pe = hipMemcpyDtoD(self->d_parser_input, (hipDeviceptr_t)d_output, output_bytes);
+                 if (pe != hipSuccess) {
                     GST_ERROR_OBJECT(self, "hipMemcpyDtoD(parser_input) failed");
-                    (void)hipFree(d_parser_input);
+                    (void)hipFree(self->d_parser_input);
                     return GST_FLOW_ERROR;
                 }
                 // Sync all GPU operations before parser touches the data
-                (void)hipStreamSynchronize(self->hip_stream);
+                //(void)hipStreamSynchronize(self->hip_stream);
+                */
+                /**
+#ifdef __MGM_TRACE_HIP__
+                roctxRangePush("mgminfer: magma_infer_transform_ip|DeviceSynchronize");
+#endif
                 hipError_t sync_err = hipDeviceSynchronize();
-                fprintf(stderr, "MAGMA_DBG: hipDeviceSynchronize after eval = %s\n", hipGetErrorString(sync_err));
-
+                GST_DEBUG_OBJECT(self, "MAGMA_DBG: hipDeviceSynchronize after eval = %s\n", hipGetErrorString(sync_err));
+#ifdef __MGM_TRACE_HIP__
+                roctxRangePop();
+#endif
+                */
                 /* --- parser dispatch --- */
                 if (self->parser_func) {
-                    fprintf(stderr, "MAGMA_DBG: about to call parser_func=%p\n", (void*)self->parser_func);
-                    fprintf(stderr, "MAGMA_DBG:   d_objects=%p d_num_det=%p d_parser_input=%p\n", (void*)self->d_objects, (void*)self->d_num_det, (void*)d_parser_input);
                     auto lengths = output_shape.lengths();
                     int ndim = (int)lengths.size();
                     std::vector<int64_t> host_lengths(lengths.begin(), lengths.end());
@@ -607,7 +749,9 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
                     }
 
                     MagmaParseParams params{};
-                    params.d_raw_output = (const void*)d_parser_input;
+
+                    // params.d_raw_output = (const void*)d_parser_input;
+                    params.d_raw_output = (const void*)d_output;
                     params.output_shape = host_lengths.data();
                     params.num_dims = ndim;
                     params.net_width = net_w;
@@ -625,7 +769,7 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
                     GST_INFO_OBJECT(self, "pre-parser: calling parser_func at %p", (void*)self->parser_func);
 
                     int pret = self->parser_func(&params);
-                    (void)hipFree(d_parser_input);
+                    //(void)hipFree(d_parser_input);
 
                     /* Ensure GPU writes to objects buffer are visible */
                     (void)hipStreamSynchronize(self->hip_stream);
@@ -640,7 +784,7 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
 
                     if (pret != 0) {
                         GST_ERROR_OBJECT(self, "parser failed with code %d", pret);
-                        (void)hipDestroyExternalMemory(tensor_ext);
+
                         return GST_FLOW_ERROR;
                     }
 
@@ -648,9 +792,8 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
                     (void)hipMemcpyDtoH(&num_detected, self->d_num_det, sizeof(int));
 
                     GST_LOG_OBJECT(self, "frame %u — parser produced %d objects", self->frame_counter, num_detected);
-                    (void)hipDestroyExternalMemory(tensor_ext);
-                    return attach_inference_meta(self, buf, num_detected);
 
+                    return attach_inference_meta(self, buf, num_detected);
                 } else {
                     /* --- fallback: legacy hardcoded path (no parser) --- */
                     gsize output_bytes = output_shape.bytes();
@@ -659,7 +802,7 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
                     hipError_t herr = hipMemcpyDtoD(self->d_objects, (hipDeviceptr_t)d_output, copy_bytes);
                     if (herr != hipSuccess) {
                         GST_ERROR_OBJECT(self, "hipMemcpyDtoD failed: %s", hipGetErrorString(herr));
-                        (void)hipDestroyExternalMemory(tensor_ext);
+
                         return GST_FLOW_ERROR;
                     }
 
@@ -679,7 +822,7 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
                 }
             } catch (const std::exception& e) {
                 GST_ERROR_OBJECT(self, "MIGraphX eval failed: %s", e.what());
-                (void)hipDestroyExternalMemory(tensor_ext);
+
                 return GST_FLOW_ERROR;
             }
         } else {
@@ -702,7 +845,11 @@ static void gst_magma_infer_class_init(GstMagmaInferClass* klass) {
     gobject_class->get_property = gst_magma_infer_get_property;
     gobject_class->finalize = gst_magma_infer_finalize;
 
-    g_object_class_install_property(gobject_class, PROP_MODEL_PATH, g_param_spec_string("model-path", "Model path", "Path to the inference model file", NULL, G_PARAM_READWRITE));
+    g_object_class_install_property(gobject_class, PROP_ONNX_MODEL_PATH, g_param_spec_string("model-onnx-file", "The Onnx Model path", "Path to the onnx model file", NULL, G_PARAM_READWRITE));
+    g_object_class_install_property(
+        gobject_class,
+        PROP_MXR_MODEL_PATH,
+        g_param_spec_string("model-mxr-file", "The MXR Model path", "Path to the mxr model file(needs model-onnx-file, if there path is either invalid or outdated)", NULL, G_PARAM_READWRITE));
 
     g_object_class_install_property(
         gobject_class, PROP_INFERENCE_INTERVAL, g_param_spec_uint("inference-interval", "Inference interval", "Run inference every N frames (1 = every frame)", 1, G_MAXUINT32, 1, G_PARAM_READWRITE));
@@ -731,11 +878,39 @@ static void gst_magma_infer_class_init(GstMagmaInferClass* klass) {
     trans->transform_ip = gst_magma_infer_transform_ip;
     trans->start = gst_magma_infer_start;
     trans->stop = gst_magma_infer_stop;
+    trans->decide_allocation = gst_magma_infer_decide_allocation;
 
     magma_inference_meta_get_info();
     magma_tensor_meta_get_info();
 
     GST_DEBUG_CATEGORY_INIT(magma_infer_debug, "magma_infer", 0, "Magma Inference Plugin");
+}
+
+/** --- DECIDE_ALLOCATION: increase buffer pool min-buffers for GPU pipeline cushion --- */
+static gboolean gst_magma_infer_decide_allocation(GstBaseTransform* trans, GstQuery* query) {
+    GstBufferPool* pool = NULL;
+    GstStructure* config;
+    guint size, min_bufs, max_bufs;
+
+    if (!GST_BASE_TRANSFORM_CLASS(gst_magma_infer_parent_class)->decide_allocation(trans, query))
+        return FALSE;
+
+    if (gst_query_get_n_allocation_pools(query) > 0) {
+        gst_query_parse_nth_allocation_pool(query, 0, &pool, &size, &min_bufs, &max_bufs);
+
+        if (pool) {
+            config = gst_buffer_pool_get_config(pool);
+
+            if (min_bufs < 12)
+                min_bufs = 12;
+
+            gst_buffer_pool_config_set_params(config, NULL, size, min_bufs, max_bufs);
+            gst_buffer_pool_set_config(pool, config);
+            gst_object_unref(pool);
+        }
+    }
+
+    return TRUE;
 }
 
 /** --- PLUGIN REGISTRATION --- */

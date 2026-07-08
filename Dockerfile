@@ -1,4 +1,5 @@
-FROM ubuntu:22.04
+#anything but Ubuntu
+FROM debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -27,7 +28,7 @@ RUN apt-get update && apt-get install -y \
 RUN wget -q -O - https://repo.radeon.com/rocm/rocm.gpg.key \
     | gpg --dearmor -o /etc/apt/keyrings/rocm.gpg && \
     echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] \
-https://repo.radeon.com/rocm/apt/7.2.3 jammy main" > /etc/apt/sources.list.d/rocm.list && \
+    https://repo.radeon.com/rocm/apt/7.2.3 jammy main" > /etc/apt/sources.list.d/rocm.list && \
     echo "Package: *" > /etc/apt/preferences.d/rocm && \
     echo "Pin: release o=repo.radeon.com" >> /etc/apt/preferences.d/rocm && \
     echo "Pin-Priority: 1001" >> /etc/apt/preferences.d/rocm

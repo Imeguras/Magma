@@ -1,4 +1,4 @@
-project('Magma', 'c','cpp', version : '0.1.0', license : 'LGPLv3')
+project('Magma', 'c','cpp', version : '1.0.0', license : 'LGPLv3')
 add_project_arguments('-DPACKAGE="magma"','-D__HIP_PLATFORM_AMD__', language: 'cpp')
 
 plugins_install_dir = join_paths(get_option('libdir'), 'gstreamer-1.0')
@@ -14,6 +14,8 @@ gstbase_dep = dependency('gstreamer-base-1.0', version : '>=1.19', fallback : ['
 gstvideo_dep = dependency('gstreamer-video-1.0', version : '>=1.19', fallback : ['gstreamer', 'gst_video_dep'])
 
 hip_dep = dependency('hip', required: true)
+hip_host_dep = cpp.find_library('amdhip64', dirs : ['/opt/rocm/lib'], required : true)
+roctx_dep = cpp.find_library('roctx64', dirs : ['/opt/rocm/lib'], required : true)
 hipconfig = find_program('hipconfig', required : true)
 
 rocm_path = run_command(

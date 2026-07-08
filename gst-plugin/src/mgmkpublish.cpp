@@ -21,6 +21,17 @@ G_DEFINE_TYPE(GstMagmaPublish, gst_magma_publish, GST_TYPE_BASE_SINK)
 static GstStaticPadTemplate sink_template = GST_STATIC_PAD_TEMPLATE("sink", GST_PAD_SINK, GST_PAD_ALWAYS, GST_STATIC_CAPS("application/x-magma-msg"));
 
 /* ---------- render ---------- */
+/**
+ * @brief Render (publish) a buffer to Kafka.
+ *
+ * Serializes MagmaInferenceMeta from the buffer and publishes
+ * the serialized message to the configured Kafka topic via
+ * librdkafka.
+ *
+ * @param bsink The base sink element
+ * @param buf   Input buffer with MagmaInferenceMeta
+ * @return GST_FLOW_OK on success
+ */
 static GstFlowReturn gst_magma_publish_render(GstBaseSink* bsink, GstBuffer* buf) {
     GstMagmaPublish* self = GST_MAGMA_PUBLISH(bsink);
 

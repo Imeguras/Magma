@@ -125,6 +125,17 @@ static gchar* serialize_to_protobuf(MagmaInferenceMeta* m, int* out_len) {
 #endif
 
 /* ---------- transform ---------- */
+/**
+ * @brief Main transform entry point — serialize inference results.
+ *
+ * Reads MagmaInferenceMeta, formats detection objects as JSON
+ * or Protobuf, and writes the serialized string to the output buffer.
+ *
+ * @param trans The base transform element
+ * @param inbuf  Input buffer with MagmaInferenceMeta
+ * @param outbuf Output buffer with serialized data
+ * @return GST_FLOW_OK on success
+ */
 static GstFlowReturn gst_magma_serialize_transform(GstBaseTransform* trans, GstBuffer* inbuf, GstBuffer* outbuf) {
     GstMagmaSerialize* self = GST_MAGMA_SERIALIZE(trans);
 

@@ -1,6 +1,7 @@
 #include "mgmpreproc.hpp"
 #include "kernel_utils.hpp"
 #include "magma-meta.h"
+#include "magma-hip-stream.hpp"
 
 #include <string>
 #include <vector>
@@ -9,22 +10,6 @@
 #include <unistd.h>
 #include <xf86drm.h>
 #include <gbm.h>
-
-// --- Host-side error codes (mirrors common.hip defines) ---
-static const char* magma_err_name(int code) {
-    switch (code) {
-    case 0: return "NONE";
-    case 1: return "ROI_BOUNDS";
-    default: return "UNKNOWN";
-    }
-}
-static const char* magma_err_desc(int code) {
-    switch (code) {
-    case 0: return "no error";
-    case 1: return "crop rectangle exceeds source dimensions — tensor is black";
-    default: return "unspecified error";
-    }
-}
 
 /** --- GOBJECT / GSTREAMER STUFF --- */
 GST_DEBUG_CATEGORY_STATIC(magma_preproc_debug);
@@ -53,6 +38,14 @@ static const char* find_kernel_dir(void) {
 }
 
 /** --- DRM / GBM HELPERS --- */
+/**
+ * @brief Open the first available DRM node for GBM usage.
+ *
+ * Searches /dev/dri/card0..63 and returns the first openable FD
+ * that has DRM resources available.
+ *
+ * @return DRM FD on success, -1 on failure
+ */
 static int open_drm_node(void) {
     for (int i = 0; i < 64; i++) {
         char path[64];
@@ -70,6 +63,15 @@ static int open_drm_node(void) {
     return -1;
 }
 
+/**
+ * @brief Ensure the GBM device and tensor allocation DRM node are open.
+ *
+ * Called once per stream start. Opens a DRM node, creates a GBM
+ * device, and stores them in self.
+ *
+ * @param self Preprocessing element
+ * @return TRUE on success
+ */
 static gboolean ensure_gbm_device(GstMagmaPreproc* self) {
     if (self->gbm_ready)
         return TRUE;
@@ -91,6 +93,15 @@ static gboolean ensure_gbm_device(GstMagmaPreproc* self) {
 }
 
 /** --- TENSOR OUTPUT (DMABuf-backed) --- */
+/**
+ * @brief Allocate the tensor DMABuf for preprocessing output.
+ *
+ * Creates a DMABuf-backed GstMemory for the float32 RGB tensor,
+ * imports it to HIP, and caches the device pointer for reuse.
+ *
+ * @param self Preprocessing element
+ * @return TRUE on success
+ */
 static gboolean ensure_tensor(GstMagmaPreproc* self) {
     if (self->d_tensor_output)
         return TRUE;
@@ -222,15 +233,10 @@ static void gst_magma_preproc_finalize(GObject* object) {
         (void)hipDestroyExternalMemory(self->external_memory);
         self->external_memory = nullptr;
     }
-    if (self->hip_stream) {
-        (void)hipStreamDestroy(self->hip_stream);
-        self->hip_stream = nullptr;
+    if (self->d_input_upload) {
+        (void)hipFree(self->d_input_upload);
+        self->d_input_upload = 0;
     }
-    if (self->d_error_code) {
-        (void)hipFree(self->d_error_code);
-        self->d_error_code = nullptr;
-    }
-
     if (self->gbm) {
         gbm_device_destroy(self->gbm);
         self->gbm = nullptr;
@@ -262,6 +268,7 @@ static void gst_magma_preproc_init(GstMagmaPreproc* self) {
     self->hip_stream = nullptr;
     self->external_memory = nullptr;
     self->d_image = 0;
+    self->d_input_upload = 0;
     self->imported = FALSE;
 
     self->kernel_module = nullptr;
@@ -271,7 +278,6 @@ static void gst_magma_preproc_init(GstMagmaPreproc* self) {
     self->drm_fd = -1;
     self->gbm = nullptr;
     self->gbm_ready = FALSE;
-    self->d_error_code = nullptr;
     self->tensor_dmabuf_fd = -1;
     self->tensor_ext_mem = nullptr;
     self->d_tensor_output = nullptr;
@@ -322,75 +328,101 @@ static gboolean gst_magma_preproc_transform_ip_size(GstBaseTransform* trans, Gst
 }
 
 /** --- TRANSFORM (per-frame): NV12 → tensor --- */
+/**
+ * @brief Main transform entry point — convert NV12 frame to tensor.
+ *
+ * Receives an NV12 frame (DMABuf or HIP pointer), optionally crops
+ * a region-of-interest, resizes to net_width/net_height with
+ * letterboxing, normalizes pixel values, and attaches a
+ * MagmaTensorMeta to the output buffer.
+ *
+ * @param trans The base transform element
+ * @param buf   Input/output buffer (NV12 in, NV12+tensor meta out)
+ * @return GST_FLOW_OK on success
+ */
 static GstFlowReturn gst_magma_preproc_transform_ip(GstBaseTransform* trans, GstBuffer* buf) {
     GstMagmaPreproc* self = GST_MAGMA_PREPROC(trans);
 
-    // Ensure the tensor meta type is registered exactly once
     magma_tensor_meta_get_info();
 
-    GstMemory* mem = gst_buffer_peek_memory(buf, 0);
-    if (!gst_is_dmabuf_memory(mem)) {
-        GST_ERROR_OBJECT(self, "mgmpreproc requires DMABuf memory");
-        return GST_FLOW_ERROR;
-    }
-
-    gint fd = gst_dmabuf_memory_get_fd(mem);
-
-    // Create HIP stream once
     if (!self->hip_stream) {
-        hipError_t err = hipStreamCreate(&self->hip_stream);
-        if (err != hipSuccess) {
-            GST_ERROR_OBJECT(self, "hipStreamCreate failed: %s", hipGetErrorString(err));
+        self->hip_stream = magma_get_shared_hip_stream();
+        if (!self->hip_stream) {
+            GST_ERROR_OBJECT(self, "magma_get_shared_hip_stream failed");
             return GST_FLOW_ERROR;
         }
     }
 
-    // Allocate kernel error flag once
-    if (!self->d_error_code) {
-        hipError_t err = hipMalloc(&self->d_error_code, sizeof(int));
-        if (err != hipSuccess) {
-            GST_ERROR_OBJECT(self, "hipMalloc(error_code) failed: %s", hipGetErrorString(err));
-            return GST_FLOW_ERROR;
+    // --- Import input frame ---
+    MagmaHipMeta* hip_meta = magma_buffer_get_hip_meta(buf);
+    if (hip_meta) {
+        self->d_image = hip_meta->d_ptr;
+    } else {
+        GstMemory* mem = gst_buffer_peek_memory(buf, 0);
+        if (gst_is_dmabuf_memory(mem)) {
+            if (self->external_memory) {
+                (void)hipDestroyExternalMemory(self->external_memory);
+                self->external_memory = nullptr;
+                self->d_image = 0;
+            }
+
+            gint raw_fd = gst_dmabuf_memory_get_fd(mem);
+            int fd = fcntl(raw_fd, F_DUPFD_CLOEXEC, 0);
+            if (fd < 0) {
+                GST_ERROR_OBJECT(self, "fcntl(DUPFD) failed");
+                return GST_FLOW_ERROR;
+            }
+            hipExternalMemoryHandleDesc desc{};
+            desc.type = hipExternalMemoryHandleTypeOpaqueFd;
+            desc.handle.fd = fd;
+            desc.size = (gsize)self->in_width * self->in_height * 3 / 2;
+
+            hipError_t herr = hipImportExternalMemory(&self->external_memory, &desc);
+            close(fd);
+            if (herr != hipSuccess) {
+                GST_ERROR_OBJECT(self, "hipImportExternalMemory failed: %s", hipGetErrorString(herr));
+                return GST_FLOW_ERROR;
+            }
+
+            hipExternalMemoryBufferDesc bdesc{};
+            bdesc.offset = 0;
+            bdesc.size = desc.size;
+
+            herr = hipExternalMemoryGetMappedBuffer(&self->d_image, self->external_memory, &bdesc);
+            if (herr != hipSuccess) {
+                (void)hipDestroyExternalMemory(self->external_memory);
+                self->external_memory = nullptr;
+                return GST_FLOW_ERROR;
+            }
+        } else {
+            // System memory fallback: upload to GPU
+            GstMapInfo in_map;
+            if (!gst_buffer_map(buf, &in_map, GST_MAP_READ)) {
+                GST_ERROR_OBJECT(self, "Failed to map input buffer");
+                return GST_FLOW_ERROR;
+            }
+
+            gsize frame_bytes = (gsize)self->in_width * self->in_height * 3 / 2;
+            if (!self->d_input_upload) {
+                hipError_t e = hipMalloc(&self->d_input_upload, frame_bytes);
+                if (e != hipSuccess) {
+                    gst_buffer_unmap(buf, &in_map);
+                    GST_ERROR_OBJECT(self, "hipMalloc(input) failed: %s", hipGetErrorString(e));
+                    return GST_FLOW_ERROR;
+                }
+            }
+
+            hipError_t herr = hipMemcpy(self->d_input_upload, in_map.data, frame_bytes, hipMemcpyHostToDevice);
+            gst_buffer_unmap(buf, &in_map);
+            if (herr != hipSuccess) {
+                GST_ERROR_OBJECT(self, "hipMemcpy(H2D) failed: %s", hipGetErrorString(herr));
+                return GST_FLOW_ERROR;
+            }
+            self->d_image = self->d_input_upload;
         }
     }
 
-    // Import DMABuf into HIP — reimport every frame since each buffer has a new FD
-    if (self->external_memory) {
-        hipError_t herr = hipDestroyExternalMemory(self->external_memory);
-        if (herr != hipSuccess)
-            GST_WARNING_OBJECT(self, "hipDestroyExternalMemory failed: %s", hipGetErrorString(herr));
-        self->external_memory = nullptr;
-        self->d_image = 0;
-    }
-
-    {
-        hipExternalMemoryHandleDesc desc{};
-        desc.type = hipExternalMemoryHandleTypeOpaqueFd;
-        desc.handle.fd = fd;
-        desc.size = (gsize)self->in_width * self->in_height * 3 / 2;
-
-        hipError_t herr = hipImportExternalMemory(&self->external_memory, &desc);
-        if (herr != hipSuccess) {
-            GST_ERROR_OBJECT(self, "hipImportExternalMemory failed: %s", hipGetErrorString(herr));
-            return GST_FLOW_ERROR;
-        }
-
-        hipExternalMemoryBufferDesc bdesc{};
-        bdesc.offset = 0;
-        bdesc.size = desc.size;
-
-        herr = hipExternalMemoryGetMappedBuffer(&self->d_image, self->external_memory, &bdesc);
-        if (herr != hipSuccess) {
-            GST_ERROR_OBJECT(self, "hipExternalMemoryGetMappedBuffer failed: %s", hipGetErrorString(herr));
-            (void)hipDestroyExternalMemory(self->external_memory);
-            self->external_memory = nullptr;
-            return GST_FLOW_ERROR;
-        }
-    }
-
-    self->imported = TRUE;
-
-    // Compile kernel once on first frame
+    // --- Compile kernel once ---
     if (!self->kernel_ready) {
         std::string kernel_dir(find_kernel_dir());
         std::string kernel_path = kernel_dir + "/preproc_kernels.hip";
@@ -403,34 +435,12 @@ static GstFlowReturn gst_magma_preproc_transform_ip(GstBaseTransform* trans, Gst
         }
         self->kernel_module = kern.module;
         self->kernel_nv12_to_rgb = kern.func;
-
         self->kernel_ready = TRUE;
         GST_INFO_OBJECT(self, "Kernel compiled and loaded from %s", kernel_path.c_str());
     }
 
-    // Input frame params
-    void* d_ptr = (void*)self->d_image;
-    int w = self->in_width;
-    int h = self->in_height;
-    int stride = self->in_width;
-    GstVideoMeta* vmeta = gst_buffer_get_video_meta(buf);
-    if (vmeta && vmeta->stride[0] > 0)
-        stride = vmeta->stride[0];
-
-    // --- Launch kernel: NV12 → RGB normalized tensor ---
-    float* t_ptr = self->d_tensor_output;
-    int nw = self->net_width;
-    int nh = self->net_height;
-    float sf = self->scale_factor;
-    int block_size = 16;
-    int grid_x = (nw + block_size - 1) / block_size;
-    int grid_y = (nh + block_size - 1) / block_size;
-    // When ROI is disabled, crop to full frame (passthrough)
-    int cx = 0;
-    int cy = 0;
-    int cw = self->in_width;
-    int ch = self->in_height;
-
+    // --- ROI setup and host-side validation ---
+    int cx = 0, cy = 0, cw = self->in_width, ch = self->in_height;
     if (self->enable_roi) {
         cx = self->roi_x;
         cy = self->roi_y;
@@ -438,33 +448,38 @@ static GstFlowReturn gst_magma_preproc_transform_ip(GstBaseTransform* trans, Gst
         ch = self->roi_h;
     }
 
-    // Zero error flag before launch
-    hipMemsetAsync(self->d_error_code, 0, sizeof(int), self->hip_stream);
+    gboolean roi_valid = (cx >= 0 && cy >= 0 && cw > 0 && ch > 0 && cx + cw <= self->in_width && cy + ch <= self->in_height);
 
-    void* args[] = {&d_ptr, &w, &h, &stride, &t_ptr, &nw, &nh, &cx, &cy, &cw, &ch, &sf, &self->d_error_code};
-    // Launch kernel grid_x x grid_y blocks of block_size x block_size threads
-    hipError_t err = hipModuleLaunchKernel(self->kernel_nv12_to_rgb, grid_x, grid_y, 1, block_size, block_size, 1, 0, self->hip_stream, args, nullptr);
-    if (err != hipSuccess) {
-        GST_ERROR_OBJECT(self, "hipModuleLaunchKernel(nv12_to_rgb) failed: %s", hipGetErrorString(err));
-        return GST_FLOW_ERROR;
+    int block_size = 16;
+
+    if (!roi_valid) {
+        hipError_t herr = hipMemsetAsync(self->d_tensor_output, 0, self->tensor_alloc_size, self->hip_stream);
+        if (herr != hipSuccess) {
+            GST_ERROR_OBJECT(self, "hipMemsetAsync failed: %s", hipGetErrorString(herr));
+            return GST_FLOW_ERROR;
+        }
+    } else {
+        void* d_ptr = (void*)self->d_image;
+        int w = self->in_width, h = self->in_height;
+        GstVideoMeta* vmeta = gst_buffer_get_video_meta(buf);
+        int stride = vmeta && vmeta->stride[0] > 0 ? vmeta->stride[0] : self->in_width;
+
+        float* t_ptr = self->d_tensor_output;
+        int nw = self->net_width, nh = self->net_height;
+        float sf = self->scale_factor;
+        int grid_x = (nw + block_size - 1) / block_size;
+        int grid_y = (nh + block_size - 1) / block_size;
+
+        void* args[] = {&d_ptr, &w, &h, &stride, &t_ptr, &nw, &nh, &cx, &cy, &cw, &ch, &sf};
+        hipError_t err = hipModuleLaunchKernel(self->kernel_nv12_to_rgb, grid_x, grid_y, 1, block_size, block_size, 1, 0, self->hip_stream, args, nullptr);
+        if (err != hipSuccess) {
+            GST_ERROR_OBJECT(self, "hipModuleLaunchKernel(nv12_to_rgb) failed: %s", hipGetErrorString(err));
+            return GST_FLOW_ERROR;
+        }
     }
 
-    err = hipStreamSynchronize(self->hip_stream);
-    if (err != hipSuccess) {
-        GST_ERROR_OBJECT(self, "hipStreamSynchronize failed: %s", hipGetErrorString(err));
-        return GST_FLOW_ERROR;
-    }
-
-    // Check kernel error flag
-    int host_err = 0;
-    hipMemcpyDtoH(&host_err, self->d_error_code, sizeof(int));
-    if (host_err) {
-        GST_WARNING_OBJECT(self, "Kernel error [%d] %s: %s",
-            host_err, magma_err_name(host_err), magma_err_desc(host_err));
-    }
-
-    // Attach tensor DMABuf as metadata on the buffer (zero-copy: refs the DMABuf)
-    MagmaTensorMeta* tmeta = magma_buffer_add_tensor_meta(buf, self->tensor_mem, nw, nh, 3);
+    // Attach tensor DMABuf as metadata on the buffer
+    MagmaTensorMeta* tmeta = magma_buffer_add_tensor_meta(buf, self->tensor_mem, self->net_width, self->net_height, 3);
     if (tmeta) {
         tmeta->roi_x = cx;
         tmeta->roi_y = cy;

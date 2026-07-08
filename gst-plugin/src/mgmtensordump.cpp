@@ -236,6 +236,18 @@ static gboolean gst_magma_tensor_dump_transform_size(GstBaseTransform* trans, Gs
 }
 
 /** --- TRANSFORM (per-frame): read tensor meta → dump + RGB preview --- */
+/**
+ * @brief Main transform entry point — dump tensor to file.
+ *
+ * Reads MagmaTensorMeta, downloads the GPU tensor to CPU,
+ * writes raw float32 data to disk, and optionally generates
+ * an RGB preview image.
+ *
+ * @param trans The base transform element
+ * @param inbuf  Input buffer with MagmaTensorMeta
+ * @param outbuf Passthrough output buffer
+ * @return GST_FLOW_OK on success
+ */
 static GstFlowReturn gst_magma_tensor_dump_transform(GstBaseTransform* trans, GstBuffer* inbuf, GstBuffer* outbuf) {
     GstMagmaTensorDump* self = GST_MAGMA_TENSOR_DUMP(trans);
 

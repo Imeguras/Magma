@@ -1,5 +1,10 @@
 #pragma once
 
+/**
+ * @file mgmosd.hpp
+ * @brief On-screen display element — draws detection boxes on video frames.
+ */
+
 #include <gst/gst.h>
 #include <gst/video/video.h>
 #include <gst/base/gstbasetransform.h>
@@ -18,6 +23,15 @@ G_BEGIN_DECLS
 
 G_DECLARE_FINAL_TYPE(GstMagmaOsd, gst_magma_osd, GST, MAGMA_OSD, GstBaseTransform)
 
+/**
+ * @brief Magma on-screen display element.
+ *
+ * Reads MagmaInferenceMeta from input buffers and draws bounding
+ * boxes, class labels, and confidence scores directly onto the
+ * NV12 frame using a GPU HIP kernel.
+ *
+ * @property line-width  Width of bounding box lines in pixels
+ */
 struct _GstMagmaOsd {
     GstBaseTransform parent;
 
@@ -26,21 +40,19 @@ struct _GstMagmaOsd {
 
     guint line_width;
 
-    /* ROI parameters to map normalized bbox back to source coords */
     guint roi_x, roi_y, roi_w, roi_h;
 
-    /* HIP kernel */
     hipStream_t hip_stream;
     hipModule_t kernel_module;
     hipFunction_t kernel_func;
     gboolean kernel_ready;
 
-    /* Per-frame DMABuf import */
     hipExternalMemory_t external_memory;
     hipDeviceptr_t d_image;
 
-    /* GPU objects buffer (uploaded per frame) */
     hipDeviceptr_t d_boxes;
+
+    hipDeviceptr_t d_input_upload;
 };
 
 G_END_DECLS

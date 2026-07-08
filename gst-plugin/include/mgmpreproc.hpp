@@ -1,5 +1,10 @@
 #pragma once
 
+/**
+ * @file mgmpreproc.hpp
+ * @brief Preprocessing element — crops, resizes, and normalizes video frames to tensors.
+ */
+
 #include <gst/gst.h>
 #include <gst/video/video.h>
 #include <gst/base/gstbasetransform.h>
@@ -12,6 +17,19 @@ G_BEGIN_DECLS
 
 G_DECLARE_FINAL_TYPE(GstMagmaPreproc, gst_magma_preproc, GST, MAGMA_PREPROC, GstBaseTransform)
 
+/**
+ * @brief Magma preprocessing element.
+ *
+ * Accepts NV12 video and produces a normalized float32 RGB tensor
+ * attached as MagmaTensorMeta. Supports configurable ROI cropping
+ * and letterbox resizing.
+ *
+ * @property net-width  Target tensor width
+ * @property net-height Target tensor height
+ * @property scale-factor  Pixel value scale factor
+ * @property enable-roi Enable region-of-interest cropping
+ * @property roi-x,roi-y,roi-w,roi-h  ROI rectangle within the source frame
+ */
 struct _GstMagmaPreproc {
     GstBaseTransform parent;
 
@@ -19,7 +37,6 @@ struct _GstMagmaPreproc {
     gint net_height;
     gfloat scale_factor;
 
-    // ROI (region of interest) — crop rectangle within the source frame
     gboolean enable_roi;
     gint roi_x;
     gint roi_y;
@@ -32,16 +49,14 @@ struct _GstMagmaPreproc {
 
     hipStream_t hip_stream;
 
-    // imported DMABUF (input NV12)
     hipExternalMemory_t external_memory;
     hipDeviceptr_t d_image;
+    hipDeviceptr_t d_input_upload;
 
-    // compiled GPU module
     hipModule_t kernel_module;
     hipFunction_t kernel_nv12_to_rgb;
     gboolean kernel_ready;
 
-    // tensor output — backed by DMABuf for zero-copy
     int drm_fd;
     struct gbm_device* gbm;
     gboolean gbm_ready;
@@ -53,9 +68,6 @@ struct _GstMagmaPreproc {
     gsize tensor_alloc_size;
 
     gboolean imported;
-
-    // Kernel error reporting
-    int* d_error_code;
 };
 
 G_END_DECLS

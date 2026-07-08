@@ -15,3 +15,10 @@ infra
 *.onnx
 *.onnx.*
 *.mxr
+benchmarks/results.txt
+
+profiles
+.rocprofv*
+
+# docs
+docs/html
