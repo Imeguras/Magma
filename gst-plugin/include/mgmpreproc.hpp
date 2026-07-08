@@ -35,6 +35,7 @@ struct _GstMagmaPreproc {
     // imported DMABUF (input NV12)
     hipExternalMemory_t external_memory;
     hipDeviceptr_t d_image;
+    hipDeviceptr_t d_input_upload; // hipMalloc for CPU upload fallback
 
     // compiled GPU module
     hipModule_t kernel_module;
@@ -53,9 +54,8 @@ struct _GstMagmaPreproc {
     gsize tensor_alloc_size;
 
     gboolean imported;
-
-    // Kernel error reporting
-    int* d_error_code;
 };
+
+
 
 G_END_DECLS

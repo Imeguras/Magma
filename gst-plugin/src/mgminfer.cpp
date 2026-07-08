@@ -1,6 +1,7 @@
 #include "mgminfer.hpp"
 #include "magma-meta.h"
 #include "kernel_utils.hpp"
+#include "magma-hip-stream.hpp"
 
 #include <string>
 #include <cstring>
@@ -206,11 +207,6 @@ static void gst_magma_infer_finalize(GObject* object) {
     }
     self->cached_tensor_dptr = 0;
     self->cached_tensor_mem = NULL;
-
-    if (self->hip_stream) {
-        (void)hipStreamDestroy(self->hip_stream);
-        self->hip_stream = nullptr;
-    }
 
     if (self->migraphx_model) {
         delete static_cast<MigraphXModel*>(self->migraphx_model);
@@ -423,19 +419,12 @@ static gboolean gst_magma_infer_stop(GstBaseTransform* trans) {
     self->cached_tensor_dptr = 0;
     self->cached_tensor_mem = NULL;
 
-    if (self->hip_stream) {
-        (void)hipStreamDestroy(self->hip_stream);
-        self->hip_stream = nullptr;
-    }
-
     if (self->parser_handle) {
         dlclose(self->parser_handle);
         self->parser_handle = nullptr;
         self->parser_func = nullptr;
         GST_INFO_OBJECT(self, "parser plugin unloaded");
     }
-
-    GST_INFO_OBJECT(self, "HIP stream destroyed");
 
     self->model_loaded = FALSE;
 
@@ -610,11 +599,11 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
         return GST_FLOW_OK;
     }
 
-    /* ensure stream */
+    /* ensure stream (shared with mgmpreproc — guarantees GPU ordering without CPU sync) */
     if (!self->hip_stream) {
-        hipError_t err = hipStreamCreate(&self->hip_stream);
-        if (err != hipSuccess) {
-            GST_ERROR_OBJECT(self, "hipStreamCreate failed: %s", hipGetErrorString(err));
+        self->hip_stream = magma_get_shared_hip_stream();
+        if (!self->hip_stream) {
+            GST_ERROR_OBJECT(self, "magma_get_shared_hip_stream failed");
             return GST_FLOW_ERROR;
         }
     }

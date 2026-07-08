@@ -1,4 +1,6 @@
 #include "mgmosd.hpp"
+#include "magma-hip-stream.hpp"
+#include "magma-meta.h"
 
 #include <cstring>
 #include <cstdio>
@@ -21,11 +23,13 @@ G_DEFINE_TYPE(GstMagmaOsd, gst_magma_osd, GST_TYPE_BASE_TRANSFORM)
 
 static GstStaticPadTemplate sink_template = GST_STATIC_PAD_TEMPLATE(
     "sink", GST_PAD_SINK, GST_PAD_ALWAYS,
-    GST_STATIC_CAPS("video/x-raw(memory:DMABuf),format=(string)NV12"));
+    GST_STATIC_CAPS("video/x-raw(memory:DMABuf),format=(string)NV12;"
+                    "video/x-raw,format=(string)NV12"));
 
 static GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE(
     "src", GST_PAD_SRC, GST_PAD_ALWAYS,
-    GST_STATIC_CAPS("video/x-raw(memory:DMABuf),format=(string)NV12"));
+    GST_STATIC_CAPS("video/x-raw(memory:DMABuf),format=(string)NV12;"
+                    "video/x-raw,format=(string)NV12"));
 
 /* ---------- color palette (RGB -> precomputed YUV) ---------- */
 struct YuvColor { guint8 y, u, v; };
@@ -90,9 +94,9 @@ static hipExternalMemory_t import_dmabuf(int fd, gsize size, hipDeviceptr_t* d_p
 static gboolean gst_magma_osd_start(GstBaseTransform* trans) {
     GstMagmaOsd* self = GST_MAGMA_OSD(trans);
 
-    hipError_t e = hipStreamCreate(&self->hip_stream);
-    if (e != hipSuccess) {
-        GST_ERROR_OBJECT(self, "hipStreamCreate failed: %s", hipGetErrorString(e));
+    self->hip_stream = magma_get_shared_hip_stream();
+    if (!self->hip_stream) {
+        GST_ERROR_OBJECT(self, "magma_get_shared_hip_stream failed");
         return FALSE;
     }
 
@@ -102,8 +106,6 @@ static gboolean gst_magma_osd_start(GstBaseTransform* trans) {
     HipKernel k = compile_kernel(kpath.c_str(), "draw_boxes_kernel", cpath.c_str());
     if (!k.func) {
         GST_ERROR_OBJECT(self, "failed to compile draw_boxes_kernel from %s", kpath.c_str());
-        (void)hipStreamDestroy(self->hip_stream);
-        self->hip_stream = nullptr;
         return FALSE;
     }
     self->kernel_module = k.module;
@@ -111,15 +113,13 @@ static gboolean gst_magma_osd_start(GstBaseTransform* trans) {
     self->kernel_ready = TRUE;
     GST_INFO_OBJECT(self, "OSD kernel compiled from %s", kpath.c_str());
 
-    e = hipMalloc(&self->d_boxes, 100 * sizeof(BoxParam));
+    hipError_t e = hipMalloc(&self->d_boxes, 100 * sizeof(BoxParam));
     if (e != hipSuccess) {
         GST_ERROR_OBJECT(self, "hipMalloc(boxes) failed: %s", hipGetErrorString(e));
         (void)hipModuleUnload(self->kernel_module);
         self->kernel_module = nullptr;
         self->kernel_func = nullptr;
         self->kernel_ready = FALSE;
-        (void)hipStreamDestroy(self->hip_stream);
-        self->hip_stream = nullptr;
         return FALSE;
     }
 
@@ -130,13 +130,14 @@ static gboolean gst_magma_osd_start(GstBaseTransform* trans) {
 static gboolean gst_magma_osd_stop(GstBaseTransform* trans) {
     GstMagmaOsd* self = GST_MAGMA_OSD(trans);
 
-    if (self->hip_stream) {
-        (void)hipStreamSynchronize(self->hip_stream);
-    }
-
     if (self->d_boxes) {
         (void)hipFree(self->d_boxes);
         self->d_boxes = nullptr;
+    }
+
+    if (self->d_input_upload) {
+        (void)hipFree(self->d_input_upload);
+        self->d_input_upload = 0;
     }
 
     if (self->external_memory) {
@@ -144,18 +145,12 @@ static gboolean gst_magma_osd_stop(GstBaseTransform* trans) {
         self->external_memory = nullptr;
         self->d_image = 0;
     }
-    self->cached_dmabuf_mem = nullptr;
 
     if (self->kernel_module) {
         (void)hipModuleUnload(self->kernel_module);
         self->kernel_module = nullptr;
         self->kernel_func = nullptr;
         self->kernel_ready = FALSE;
-    }
-
-    if (self->hip_stream) {
-        (void)hipStreamDestroy(self->hip_stream);
-        self->hip_stream = nullptr;
     }
 
     return TRUE;
@@ -220,29 +215,7 @@ static GstFlowReturn gst_magma_osd_transform_ip(GstBaseTransform* trans,
 
     if (nparams == 0) return GST_FLOW_OK;
 
-    GstMemory* mem = gst_buffer_peek_memory(buf, 0);
-    if (!mem || !gst_is_dmabuf_memory(mem)) {
-        GST_WARNING_OBJECT(self, "buffer memory is not DMABuf");
-        return GST_FLOW_OK;
-    }
-
-    /* Cache DMABuf import: only re-import when GstMemory pointer changes */
-    gsize bytes = gst_memory_get_sizes(mem, NULL, NULL);
-    if (bytes == 0) bytes = (gsize)self->in_width * self->in_height * 3 / 2;
-
-    if (mem != self->cached_dmabuf_mem) {
-        gint fd = gst_dmabuf_memory_get_fd(mem);
-        hipExternalMemory_t new_ext = import_dmabuf(fd, bytes, &self->d_image);
-        if (!new_ext || !self->d_image) {
-            GST_WARNING_OBJECT(self, "failed to import DMABuf to HIP");
-            return GST_FLOW_OK;
-        }
-        if (self->external_memory)
-            (void)hipDestroyExternalMemory(self->external_memory);
-        self->external_memory = new_ext;
-        self->cached_dmabuf_mem = mem;
-    }
-
+    gsize frame_bytes = (gsize)self->in_width * self->in_height * 3 / 2;
     int y_stride = self->in_width;
     int uv_stride = y_stride;
     size_t y_off = 0;
@@ -256,8 +229,48 @@ static GstFlowReturn gst_magma_osd_transform_ip(GstBaseTransform* trans,
         uv_off = vmeta->offset[1];
     }
 
-    uint8_t* d_y = (uint8_t*)self->d_image + y_off;
-    uint8_t* d_uv = (uint8_t*)self->d_image + uv_off;
+    // --- get GPU pointer to the frame ---
+    hipDeviceptr_t d_frame = 0;
+
+    MagmaHipMeta* hmeta = magma_buffer_get_hip_meta(buf);
+    if (hmeta) {
+        d_frame = hmeta->d_ptr;
+    } else {
+        GstMemory* mem = gst_buffer_peek_memory(buf, 0);
+        if (mem && gst_is_dmabuf_memory(mem)) {
+            gsize bytes = gst_memory_get_sizes(mem, NULL, NULL);
+            if (bytes == 0) bytes = frame_bytes;
+
+            gint raw_fd = gst_dmabuf_memory_get_fd(mem);
+            hipExternalMemory_t new_ext = import_dmabuf(raw_fd, bytes, &d_frame);
+            if (new_ext && d_frame) {
+                if (self->external_memory)
+                    (void)hipDestroyExternalMemory(self->external_memory);
+                self->external_memory = new_ext;
+            }
+        }
+        if (!d_frame) {
+            // System memory fallback: upload to GPU
+            GstMapInfo in_map;
+            if (gst_buffer_map(buf, &in_map, GST_MAP_READ)) {
+                if (!self->d_input_upload)
+                    (void)hipMalloc(&self->d_input_upload, frame_bytes);
+                if (self->d_input_upload) {
+                    hipMemcpy(self->d_input_upload, in_map.data, frame_bytes, hipMemcpyHostToDevice);
+                    d_frame = self->d_input_upload;
+                }
+                gst_buffer_unmap(buf, &in_map);
+            }
+        }
+    }
+
+    if (!d_frame) {
+        GST_WARNING_OBJECT(self, "failed to get GPU pointer to frame");
+        return GST_FLOW_OK;
+    }
+
+    uint8_t* d_y = (uint8_t*)d_frame + y_off;
+    uint8_t* d_uv = (uint8_t*)d_frame + uv_off;
 
     size_t box_bytes = (size_t)nparams * sizeof(BoxParam);
     hipError_t e = hipMemcpyHtoDAsync(self->d_boxes, params, box_bytes, self->hip_stream);
@@ -346,9 +359,9 @@ static void gst_magma_osd_get_property(GObject* object, guint prop_id,
 static void gst_magma_osd_finalize(GObject* object) {
     GstMagmaOsd* self = GST_MAGMA_OSD(object);
     if (self->d_boxes) { (void)hipFree(self->d_boxes); self->d_boxes = nullptr; }
+    if (self->d_input_upload) { (void)hipFree(self->d_input_upload); self->d_input_upload = 0; }
     if (self->external_memory) { (void)hipDestroyExternalMemory(self->external_memory); self->external_memory = nullptr; }
     if (self->kernel_module) { (void)hipModuleUnload(self->kernel_module); self->kernel_module = nullptr; }
-    if (self->hip_stream) { (void)hipStreamDestroy(self->hip_stream); self->hip_stream = nullptr; }
     G_OBJECT_CLASS(gst_magma_osd_parent_class)->finalize(object);
 }
 
@@ -363,7 +376,7 @@ static void gst_magma_osd_init(GstMagmaOsd* self) {
     self->external_memory = nullptr;
     self->d_image = 0;
     self->d_boxes = nullptr;
-    self->cached_dmabuf_mem = nullptr;
+    self->d_input_upload = 0;
     gst_base_transform_set_in_place(GST_BASE_TRANSFORM(self), TRUE);
     gst_base_transform_set_qos_enabled(GST_BASE_TRANSFORM(self), TRUE);
 }
