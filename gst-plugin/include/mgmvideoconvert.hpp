@@ -1,5 +1,10 @@
 #pragma once
 
+/**
+ * @file mgmvideoconvert.hpp
+ * @brief Video conversion element — cross-format, cross-memory-type.
+ */
+
 #include <gst/gst.h>
 #include <gst/video/video.h>
 #include <gst/base/gstbasetransform.h>
@@ -15,17 +20,19 @@ G_BEGIN_DECLS
 G_DECLARE_FINAL_TYPE(
     GstMagmaVideoConvert, gst_magma_videoconvert, GST, MAGMA_VIDEOCONVERT, GstBaseTransform)
 
-// Memory type tag for each pad in a conversion
+/**
+ * @brief Memory type tag identifying how a buffer is backed.
+ */
 typedef enum {
-    MGM_MEM_SYSTEM,   // plain system-memory GstBuffer
-    MGM_MEM_DMABUF,   // DMABuf-backed GstBuffer
-    MGM_MEM_MAGMAHIP, // GstBuffer carrying MagmaHipMeta (HIP device pointer)
+    MGM_MEM_SYSTEM,   /**< Plain system-memory GstBuffer */
+    MGM_MEM_DMABUF,   /**< DMABuf-backed GstBuffer */
+    MGM_MEM_MAGMAHIP, /**< GstBuffer carrying MagmaHipMeta (HIP device pointer) */
 } MgmMemType;
 
-// Converter function: reads/writes inbuf/outbuf according to the pair
+/** @brief Converter function signature */
 typedef GstFlowReturn (*MgmConvertFunc)(GstMagmaVideoConvert*, GstBuffer* inbuf, GstBuffer* outbuf);
 
-// One entry in the converter dispatch table
+/** @brief One entry in the converter dispatch table */
 typedef struct {
     MgmMemType in_mem;
     GstVideoFormat in_fmt;
@@ -34,6 +41,13 @@ typedef struct {
     MgmConvertFunc func;
 } MgmConvertEntry;
 
+/**
+ * @brief Magma video converter element.
+ *
+ * Converts between NV12 and I420, and between system memory, DMABuf,
+ * and MagmaHipMeta backings. Uses a dispatch table to select the
+ * optimal GPU or CPU conversion kernel.
+ */
 struct _GstMagmaVideoConvert {
     GstBaseTransform parent;
 
@@ -43,16 +57,13 @@ struct _GstMagmaVideoConvert {
     GstVideoFormat in_format;
     GstVideoFormat out_format;
 
-    // Converter selected in set_caps
     MgmConvertFunc convert;
 
-    // DRM/GBM state
     int drm_fd;
     struct gbm_device* gbm_dev;
     struct gbm_bo* gbm_bo;
     guint gbm_stride;
 
-    // HIP import of the GBM BO
     hipExternalMemory_t ext_mem;
     hipDeviceptr_t d_image;
     gsize gpu_size;
@@ -60,7 +71,6 @@ struct _GstMagmaVideoConvert {
 
     hipStream_t hip_stream;
 
-    // Compiled I420→NV12 kernel
     hipModule_t kernel_module;
     hipFunction_t kernel_func;
     gboolean kernel_ready;

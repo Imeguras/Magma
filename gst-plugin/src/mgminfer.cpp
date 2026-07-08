@@ -65,6 +65,15 @@ struct MigraphXModel {
 } // anonymous namespace
 
 /** --- OUTPUT OBJECTS GPU BUFFER --- */
+/**
+ * @brief Ensure GPU output buffers for detection objects are allocated.
+ *
+ * Allocates max_detections * sizeof(MagmaInferObjectGPU) on the GPU
+ * plus a GPU counter. Reallocates if max_objects has changed.
+ *
+ * @param self Inference element
+ * @return TRUE on success
+ */
 static gboolean ensure_objects_output(GstMagmaInfer* self) {
     if (self->d_objects)
         return TRUE;
@@ -530,6 +539,18 @@ static hipExternalMemory_t import_dmabuf_to_hip(int dmabuf_fd, gsize size, hipDe
 /** --- dummy kernel fallback (removed — model must succeed or fail) --- */
 
 /** --- attach a single detection to the buffer --- */
+/**
+ * @brief Attach a MagmaInferenceMeta with detection results to the buffer.
+ *
+ * Creates the meta, transfers GPU object count to CPU, and copies
+ * MagmaInferObjectGPU entries from the GPU output buffer into a
+ * GPtrArray of CPU-side MagmaInferObject for downstream elements.
+ *
+ * @param self        Inference element
+ * @param buf         Target buffer
+ * @param num_objects Number of detected objects on GPU
+ * @return GST_FLOW_OK on success
+ */
 static GstFlowReturn attach_inference_meta(GstMagmaInfer* self, GstBuffer* buf, gint num_objects) {
     MagmaInferenceMeta* m = magma_buffer_add_inference_meta(buf, self->in_width, self->in_height);
     if (!m) {
@@ -586,6 +607,18 @@ static GstFlowReturn attach_inference_meta(GstMagmaInfer* self, GstBuffer* buf, 
 }
 
 /** --- TRANSFORM --- */
+/**
+ * @brief Main transform entry point — run inference on the frame.
+ *
+ * Reads the MagmaTensorMeta (preprocessed tensor) from the input
+ * buffer, runs the MIGraphX model, invokes the parser plugin to
+ * decode raw output into detection objects, and attaches a
+ * MagmaInferenceMeta with the results.
+ *
+ * @param trans The base transform element
+ * @param buf   Input buffer (must have MagmaTensorMeta)
+ * @return GST_FLOW_OK on success
+ */
 static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBuffer* buf) {
     GstMagmaInfer* self = GST_MAGMA_INFER(trans);
 

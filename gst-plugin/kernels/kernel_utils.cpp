@@ -17,6 +17,18 @@ static std::string load_file(const char* path) {
     return src;
 }
 
+/**
+ * @brief Compile a HIP kernel from source at runtime.
+ *
+ * Reads the .hip source file, optionally prepends a common header,
+ * invokes hiprtcCompileProgram, and extracts the entry point function
+ * from the resulting code object.
+ *
+ * @param hip_source_path  Path to the kernel source file
+ * @param entry_point      Name of the __global__ function
+ * @param common_path      Optional path to a code snippet prepended to source
+ * @return HipKernel with module and func handles (func is nullptr on error)
+ */
 HipKernel compile_kernel(const char* hip_source_path, const char* entry_point,
                          const char* common_path) {
     HipKernel result = {nullptr, nullptr};

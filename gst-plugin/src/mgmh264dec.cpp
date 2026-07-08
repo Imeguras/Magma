@@ -408,6 +408,17 @@ static GstBuffer* create_output_buffer(
 }
 
 // ─── handle_frame — feeds bitstream, outputs decoded frames ────────
+/**
+ * @brief Decode an H.264 access unit.
+ *
+ * Sends the bitstream to rocDecode, manages pending frame
+ * reordering, and pushes decoded frames downstream when they
+ * become available in presentation order.
+ *
+ * @param decoder The video decoder element
+ * @param frame   Incoming codec frame with H.264 data
+ * @return GST_FLOW_OK on success
+ */
 static GstFlowReturn gst_magma_h264_dec_handle_frame(GstVideoDecoder* decoder, GstVideoCodecFrame* frame) {
     auto* self = GST_MAGMA_H264_DEC(decoder);
 

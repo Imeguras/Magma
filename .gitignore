@@ -19,3 +19,6 @@ benchmarks/results.txt
 
 profiles
 .rocprofv*
+
+# docs
+docs/html

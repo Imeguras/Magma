@@ -157,6 +157,17 @@ static gboolean gst_magma_osd_stop(GstBaseTransform* trans) {
 }
 
 /* ---------- transform_ip ---------- */
+/**
+ * @brief Main transform entry point — draw detection overlays.
+ *
+ * Reads MagmaInferenceMeta from the input buffer, uploads
+ * detection objects to the GPU, and runs the OSD HIP kernel
+ * to draw bounding boxes and labels directly onto the NV12 frame.
+ *
+ * @param trans The base transform element
+ * @param buf   Input/output NV12 buffer with MagmaInferenceMeta
+ * @return GST_FLOW_OK on success
+ */
 static GstFlowReturn gst_magma_osd_transform_ip(GstBaseTransform* trans,
                                                  GstBuffer* buf) {
     GstMagmaOsd* self = GST_MAGMA_OSD(trans);

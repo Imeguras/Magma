@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: debian:bookworm-slim
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          apt-get update && apt-get install -y \
+            build-essential cmake meson ninja-build pkg-config python3 \
+            wget gpg ca-certificates
+          wget -q -O - https://repo.radeon.com/rocm/rocm.gpg.key \
+            | gpg --dearmor -o /etc/apt/keyrings/rocm.gpg
+          echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] \
+            https://repo.radeon.com/rocm/apt/7.2.3 jammy main" \
+            > /etc/apt/sources.list.d/rocm.list
+          apt-get update && apt-get install -y \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            libgstreamer-plugins-bad1.0-dev gstreamer1.0-tools \
+            rocm-hip-runtime-dev rocm-device-libs rocm-cmake \
+            libdrm-dev libgbm-dev
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Configure
+        run: meson setup build --buildtype=release
+
+      - name: Build
+        run: meson compile -C build
+
+  docs:
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Doxygen
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y doxygen graphviz
+          sudo rm -rf /var/lib/apt/lists/*
+
+      - name: Generate API docs
+        working-directory: docs
+        run: doxygen Doxyfile
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: docs/html
+          destination_dir: api

@@ -38,6 +38,14 @@ static const char* find_kernel_dir(void) {
 }
 
 /** --- DRM / GBM HELPERS --- */
+/**
+ * @brief Open the first available DRM node for GBM usage.
+ *
+ * Searches /dev/dri/card0..63 and returns the first openable FD
+ * that has DRM resources available.
+ *
+ * @return DRM FD on success, -1 on failure
+ */
 static int open_drm_node(void) {
     for (int i = 0; i < 64; i++) {
         char path[64];
@@ -55,6 +63,15 @@ static int open_drm_node(void) {
     return -1;
 }
 
+/**
+ * @brief Ensure the GBM device and tensor allocation DRM node are open.
+ *
+ * Called once per stream start. Opens a DRM node, creates a GBM
+ * device, and stores them in self.
+ *
+ * @param self Preprocessing element
+ * @return TRUE on success
+ */
 static gboolean ensure_gbm_device(GstMagmaPreproc* self) {
     if (self->gbm_ready)
         return TRUE;
@@ -76,6 +93,15 @@ static gboolean ensure_gbm_device(GstMagmaPreproc* self) {
 }
 
 /** --- TENSOR OUTPUT (DMABuf-backed) --- */
+/**
+ * @brief Allocate the tensor DMABuf for preprocessing output.
+ *
+ * Creates a DMABuf-backed GstMemory for the float32 RGB tensor,
+ * imports it to HIP, and caches the device pointer for reuse.
+ *
+ * @param self Preprocessing element
+ * @return TRUE on success
+ */
 static gboolean ensure_tensor(GstMagmaPreproc* self) {
     if (self->d_tensor_output)
         return TRUE;
@@ -302,6 +328,18 @@ static gboolean gst_magma_preproc_transform_ip_size(GstBaseTransform* trans, Gst
 }
 
 /** --- TRANSFORM (per-frame): NV12 → tensor --- */
+/**
+ * @brief Main transform entry point — convert NV12 frame to tensor.
+ *
+ * Receives an NV12 frame (DMABuf or HIP pointer), optionally crops
+ * a region-of-interest, resizes to net_width/net_height with
+ * letterboxing, normalizes pixel values, and attaches a
+ * MagmaTensorMeta to the output buffer.
+ *
+ * @param trans The base transform element
+ * @param buf   Input/output buffer (NV12 in, NV12+tensor meta out)
+ * @return GST_FLOW_OK on success
+ */
 static GstFlowReturn gst_magma_preproc_transform_ip(GstBaseTransform* trans, GstBuffer* buf) {
     GstMagmaPreproc* self = GST_MAGMA_PREPROC(trans);
 

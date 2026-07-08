@@ -770,6 +770,17 @@ static GstFlowReturn conv_sys_i420_to_dmabuf_nv12(GstMagmaVideoConvert* self, Gs
 }
 
 // ─── transform ──────────────────────────────────────────────────────
+/**
+ * @brief Main transform entry point — convert between formats and memory types.
+ *
+ * Dispatches to the appropriate converter function based on the
+ * negotiated caps. Supports NV12↔I420, system↔DMABuf↔HIP.
+ *
+ * @param trans The base transform element
+ * @param inbuf  Input buffer
+ * @param outbuf Output buffer
+ * @return GST_FLOW_OK on success
+ */
 static GstFlowReturn gst_magma_videoconvert_transform(GstBaseTransform* trans, GstBuffer* inbuf, GstBuffer* outbuf) {
     GstMagmaVideoConvert* self = GST_MAGMA_VIDEOCONVERT(trans);
 

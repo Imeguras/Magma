@@ -1,4 +1,4 @@
-project('Magma', 'c','cpp', version : '0.1.0', license : 'LGPLv3')
+project('Magma', 'c','cpp', version : '1.0.0', license : 'LGPLv3')
 add_project_arguments('-DPACKAGE="magma"','-D__HIP_PLATFORM_AMD__', language: 'cpp')
 
 plugins_install_dir = join_paths(get_option('libdir'), 'gstreamer-1.0')

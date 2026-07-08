@@ -2,6 +2,20 @@
 
 /* ---------- MagmaInferObject CPU convenience ---------- */
 
+/**
+ * @brief Create a new MagmaInferObject with a copied label string.
+ *
+ * Allocates via g_slice. Caller must free with magma_infer_object_free.
+ *
+ * @param class_id   Numeric class identifier
+ * @param label      Human-readable class label (copied internally)
+ * @param confidence Detection confidence score (0..1)
+ * @param x          Normalized center X (0..1)
+ * @param y          Normalized center Y (0..1)
+ * @param w          Normalized width (0..1)
+ * @param h          Normalized height (0..1)
+ * @return Newly allocated MagmaInferObject
+ */
 MagmaInferObject* magma_infer_object_new(guint class_id, const gchar* label, gfloat confidence, gfloat x, gfloat y, gfloat w, gfloat h) {
     MagmaInferObject* obj = g_slice_new0(MagmaInferObject);
     obj->class_id = class_id;
@@ -124,6 +138,17 @@ const GstMetaInfo* magma_inference_meta_get_info(void) {
     return (const GstMetaInfo*)_magma_inference_meta_info;
 }
 
+/**
+ * @brief Attach an empty MagmaInferenceMeta to a buffer.
+ *
+ * Initialises fields to default values. Caller should populate
+ * objects, tensors, etc. after allocation.
+ *
+ * @param buffer        Target GstBuffer
+ * @param source_width  Source frame width
+ * @param source_height Source frame height
+ * @return Pointer to the attached meta, or NULL on failure
+ */
 MagmaInferenceMeta* magma_buffer_add_inference_meta(GstBuffer* buffer, guint source_width, guint source_height) {
     MagmaInferenceMeta* m = (MagmaInferenceMeta*)gst_buffer_add_meta(buffer, magma_inference_meta_get_info(), NULL);
     if (m) {
