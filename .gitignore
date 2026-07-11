@@ -22,3 +22,9 @@ profiles
 
 # docs
 docs/html
+
+.cache/*
+
+CLAUDE.md
+CONVENTIONS.md
+.aider*

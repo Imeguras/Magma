@@ -55,6 +55,38 @@ static void wait_flip(GstMagmaDisplay* self) {
 }
 
 /**
+ * @brief Fire-and-forget page flip — no blocking wait.
+ *
+ * Submits a page flip and returns immediately. The old framebuffer
+ * is cleaned up asynchronously by the page_flip_handler when the
+ * flip completes. If a flip is already pending, the new frame is
+ * dropped (pipeline is too slow for display refresh rate).
+ *
+ * @param self  Display element
+ * @param fb_id New framebuffer ID to flip to
+ * @return GST_FLOW_OK on submit, GST_FLOW_FLUSHING if dropped
+ */
+static GstFlowReturn page_flip_async(GstMagmaDisplay* self, int fb_id) {
+    if (self->flip_pending) {
+        // Drop frame: display can't keep up with pipeline
+        drmModeRmFB(self->drm_fd, fb_id);
+        return GST_FLOW_FLUSHING;
+    }
+    auto* fd = new FlipData{self, self->current_fb_id};
+    int ret = drmModePageFlip(self->drm_fd, self->crtc_id, fb_id,
+                              DRM_MODE_PAGE_FLIP_EVENT, fd);
+    if (ret) {
+        GST_ERROR_OBJECT(self, "drmModePageFlip failed: %d", ret);
+        delete fd;
+        drmModeRmFB(self->drm_fd, fb_id);
+        return GST_FLOW_ERROR;
+    }
+    self->current_fb_id = fb_id;
+    self->flip_pending = TRUE;
+    return GST_FLOW_OK;
+}
+
+/**
  * @brief Create a DRM framebuffer from a DMABuf FD.
  *
  * Imports the buffer via drmPrimeFDToHandle, optionally tries
@@ -119,7 +151,7 @@ static gboolean create_gpu_dmabuf(GstMagmaDisplay* self) {
     int bw = self->mode.hdisplay;
     int bh = self->mode.vdisplay;
     self->gbm_bo = gbm_bo_create(self->gbm_dev, bw, bh,
-                                  GBM_FORMAT_XRGB8888, GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
+                                  GBM_FORMAT_XRGB8888, GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR);
     if (!self->gbm_bo) {
         GST_ERROR_OBJECT(self, "gbm_bo_create(XRGB8888, %dx%d) failed", bw, bh);
         return FALSE;
@@ -419,18 +451,7 @@ static GstFlowReturn display_fb(GstMagmaDisplay* self, int fb_id) {
     }
 
     if (self->sync) {
-        wait_flip(self);
-        auto* fd = new FlipData{self, self->current_fb_id};
-        int ret = drmModePageFlip(self->drm_fd, self->crtc_id, fb_id,
-                                  DRM_MODE_PAGE_FLIP_EVENT, fd);
-        if (ret) {
-            GST_ERROR_OBJECT(self, "drmModePageFlip failed: %d", ret);
-            delete fd;
-            drmModeRmFB(self->drm_fd, fb_id);
-            return GST_FLOW_ERROR;
-        }
-        self->current_fb_id = fb_id;
-        self->flip_pending = TRUE;
+        return page_flip_async(self, fb_id);
     } else {
         if (self->flip_pending) {
             // Async mode: drop frame if previous flip still pending

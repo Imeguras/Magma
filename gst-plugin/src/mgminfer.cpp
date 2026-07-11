@@ -715,16 +715,6 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
                 // Sync all GPU operations before parser touches the data
                 //(void)hipStreamSynchronize(self->hip_stream);
                 */
-                /**
-#ifdef __MGM_TRACE_HIP__
-                roctxRangePush("mgminfer: magma_infer_transform_ip|DeviceSynchronize");
-#endif
-                hipError_t sync_err = hipDeviceSynchronize();
-                GST_DEBUG_OBJECT(self, "MAGMA_DBG: hipDeviceSynchronize after eval = %s\n", hipGetErrorString(sync_err));
-#ifdef __MGM_TRACE_HIP__
-                roctxRangePop();
-#endif
-                */
                 /* --- parser dispatch --- */
                 if (self->parser_func) {
                     auto lengths = output_shape.lengths();
@@ -770,17 +760,6 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
 
                     int pret = self->parser_func(&params);
                     //(void)hipFree(d_parser_input);
-
-                    /* Ensure GPU writes to objects buffer are visible */
-                    (void)hipStreamSynchronize(self->hip_stream);
-
-                    /* Debug: read first object back to verify GPU→CPU data path */
-                    {
-                        MagmaInferObjectGPU dbg[4];
-                        (void)hipMemcpyDtoH(dbg, self->d_objects, sizeof(dbg));
-                        // send it to
-                        GST_DEBUG_OBJECT(self, "Object[0] class_id=%d conf=%f x=%f y=%f w=%f h=%f", dbg[0].class_id, dbg[0].confidence, dbg[0].x, dbg[0].y, dbg[0].width, dbg[0].height);
-                    }
 
                     if (pret != 0) {
                         GST_ERROR_OBJECT(self, "parser failed with code %d", pret);
