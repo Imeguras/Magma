@@ -307,7 +307,7 @@ static GstFlowReturn gst_magma_osd_transform_ip(GstBaseTransform* trans,
                 if (!self->d_input_upload)
                     (void)hipMalloc(&self->d_input_upload, frame_bytes);
                 if (self->d_input_upload) {
-                    hipMemcpy(self->d_input_upload, in_map.data, frame_bytes, hipMemcpyHostToDevice);
+                    (void)hipMemcpy(self->d_input_upload, in_map.data, frame_bytes, hipMemcpyHostToDevice);
                     d_frame = self->d_input_upload;
                 }
                 gst_buffer_unmap(buf, &in_map);

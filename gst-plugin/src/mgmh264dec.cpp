@@ -191,7 +191,10 @@ static gboolean gst_magma_h264_dec_start(GstVideoDecoder* decoder) {
                                                 false,                        // allow B-frame reordering
                                                 nullptr,                      // crop rect
                                                 false,                        // extract SEI
-                                                0                             // display delay
+                                                0,                            // display delay
+                                                0,                            // max_width (auto)
+                                                0,                            // max_height (auto)
+                                                10000000                      // clk_rate — 10MHz (100ns PTS units, matches GStreamer ns/100)
         );
 
         self->width = 0;
@@ -297,7 +300,14 @@ static hipError_t ensure_nv12_i420_kernel(GstMagmaH264Dec* self) {
         return hipErrorUnknown;
     }
 
-    const char* opts[] = {"--gpu-architecture=gfx1101"};
+    hipDeviceProp_t props{};
+    (void)hipGetDeviceProperties(&props, 0);
+    std::string arch_str = std::string("--gpu-architecture=") + props.gcnArchName;
+    // gcnArchName may include a trailing colon+features — strip at ':'
+    auto colon = arch_str.find(':');
+    if (colon != std::string::npos)
+        arch_str.resize(colon);
+    const char* opts[] = {arch_str.c_str()};
     rt = hiprtcCompileProgram(prog, 1, opts);
     if (rt != HIPRTC_SUCCESS) {
         size_t log_sz = 0;
@@ -325,19 +335,9 @@ static hipError_t ensure_nv12_i420_kernel(GstMagmaH264Dec* self) {
 // ─── Create output GstBuffer from a decoded HIP frame ───────────────
 // INTERNAL surfaces have separate Y/UV pointers with hardware pitch.
 // We copy into a contiguous I420 or NV12 buffer in HIP memory, then
-// immediately release the INTERNAL surface.
-// Callback data for deferred ReleaseFrame
-struct ReleaseCallbackData {
-    RocVideoDecoder* roc_dec;
-    int64_t pts;
-};
-
-static void release_frame_cb(hipStream_t stream, hipError_t status, void* user_data) {
-    auto* d = static_cast<ReleaseCallbackData*>(user_data);
-    if (status == hipSuccess && d->roc_dec)
-        d->roc_dec->ReleaseFrame(d->pts);
-    delete d;
-}
+// immediately release the INTERNAL surface. The copy is enqueued on
+// the shared Magma stream, so downstream ops on the same stream are
+// ordered after the copy — no host-side sync needed.
 
 static GstBuffer* create_output_buffer(
     GstMagmaH264Dec* self, RocVideoDecoder* roc_dec, uint8_t* y_ptr, uint8_t* uv_ptr, uint32_t pitch_y, uint32_t pitch_uv, int64_t pts, int width, int height, GstVideoFormat out_fmt) {
@@ -379,6 +379,7 @@ static GstBuffer* create_output_buffer(
     if (herr != hipSuccess) {
         GST_ERROR_OBJECT(self, "hipMemcpy2DAsync(Y) failed: %s", hipGetErrorString(herr));
         (void)hipFree(d_frame);
+        (void)roc_dec->ReleaseFrame(pts);
         return nullptr;
     }
 
@@ -387,6 +388,7 @@ static GstBuffer* create_output_buffer(
         if (herr != hipSuccess) {
             GST_ERROR_OBJECT(self, "nv12_to_i420 kernel init failed: %s", hipGetErrorString(herr));
             (void)hipFree(d_frame);
+            (void)roc_dec->ReleaseFrame(pts);
             return nullptr;
         }
         uint8_t* d_u = d_uv;
@@ -398,6 +400,7 @@ static GstBuffer* create_output_buffer(
         if (herr != hipSuccess) {
             GST_ERROR_OBJECT(self, "nv12_to_i420 kernel launch failed: %s", hipGetErrorString(herr));
             (void)hipFree(d_frame);
+            (void)roc_dec->ReleaseFrame(pts);
             return nullptr;
         }
     } else {
@@ -405,23 +408,15 @@ static GstBuffer* create_output_buffer(
         if (herr != hipSuccess) {
             GST_ERROR_OBJECT(self, "hipMemcpy2DAsync(UV) failed: %s", hipGetErrorString(herr));
             (void)hipFree(d_frame);
+            (void)roc_dec->ReleaseFrame(pts);
             return nullptr;
         }
     }
 
-    // Defer ReleaseFrame to a stream callback — fires when GPU finishes the copies.
-    // No host-side sync needed: downstream kernels on the same stream are ordered
-    // after the copies and will read valid data.
-    auto* cb_data = new ReleaseCallbackData{roc_dec, pts};
-    herr = hipStreamAddCallback(stream, release_frame_cb, cb_data, 0);
-    if (herr != hipSuccess) {
-        GST_WARNING_OBJECT(self, "hipStreamAddCallback failed: %s", hipGetErrorString(herr));
-        // Fallback: sync and release synchronously
-        herr = hipStreamSynchronize(stream);
-        if (herr == hipSuccess)
-            roc_dec->ReleaseFrame(pts);
-        delete cb_data;
-    }
+    // Release the INTERNAL decoder surface immediately. The copy is already
+    // enqueued on the shared Magma stream — downstream ops on the same stream
+    // will see the copied data, not the original surface. No host sync needed.
+    (void)roc_dec->ReleaseFrame(pts);
 
     GstBuffer* buf = gst_buffer_new_and_alloc(16);
     gst_buffer_memset(buf, 0, 0, 16);

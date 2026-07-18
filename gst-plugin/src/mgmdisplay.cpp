@@ -193,7 +193,7 @@ static gboolean create_gpu_dmabuf(GstMagmaDisplay* self) {
     herr = hipExternalMemoryGetMappedBuffer(&self->d_image, self->ext_mem, &bdesc);
     if (herr != hipSuccess) {
         GST_ERROR_OBJECT(self, "hipExternalMemoryGetMappedBuffer failed: %s", hipGetErrorString(herr));
-        hipDestroyExternalMemory(self->ext_mem);
+        (void)hipDestroyExternalMemory(self->ext_mem);
         self->ext_mem = nullptr;
         gbm_bo_destroy(self->gbm_bo);
         self->gbm_bo = nullptr;
@@ -204,7 +204,7 @@ static gboolean create_gpu_dmabuf(GstMagmaDisplay* self) {
         hipError_t e = hipStreamCreate(&self->hip_stream);
         if (e != hipSuccess) {
             GST_ERROR_OBJECT(self, "hipStreamCreate failed: %s", hipGetErrorString(e));
-            hipDestroyExternalMemory(self->ext_mem);
+            (void)hipDestroyExternalMemory(self->ext_mem);
             self->ext_mem = nullptr;
             gbm_bo_destroy(self->gbm_bo);
             self->gbm_bo = nullptr;
@@ -391,7 +391,7 @@ static gboolean gst_magma_display_stop(GstBaseSink* sink) {
         self->gbm_bo = nullptr;
     }
     if (self->ext_mem) {
-        hipDestroyExternalMemory(self->ext_mem);
+        (void)hipDestroyExternalMemory(self->ext_mem);
         self->ext_mem = nullptr;
     }
     if (self->gbm_dev) {
@@ -399,7 +399,7 @@ static gboolean gst_magma_display_stop(GstBaseSink* sink) {
         self->gbm_dev = nullptr;
     }
     if (self->hip_stream) {
-        hipStreamDestroy(self->hip_stream);
+        (void)hipStreamDestroy(self->hip_stream);
         self->hip_stream = nullptr;
     }
     if (self->drm_fd >= 0) {
@@ -593,11 +593,11 @@ static GstFlowReturn copy_nv12_to_gbm(GstMagmaDisplay* self, const void* src, gu
     }
     if (herr != hipSuccess) {
         GST_ERROR_OBJECT(self, "hipMemcpy2D(temp) failed: %s", hipGetErrorString(herr));
-        hipFree(d_y); hipFree(d_uv);
+        (void)hipFree(d_y); (void)hipFree(d_uv);
         return GST_FLOW_ERROR;
     }
     if (kind != hipMemcpyHostToDevice)
-        hipStreamSynchronize(self->hip_stream);
+        (void)hipStreamSynchronize(self->hip_stream);
 
     // Launch kernel: nv12_to_xrgb8888(y, y_stride, uv, uv_stride, dst, dst_stride, w, h)
     int block_size = 16;
@@ -616,11 +616,11 @@ static GstFlowReturn copy_nv12_to_gbm(GstMagmaDisplay* self, const void* src, gu
                                   0, self->hip_stream, args, nullptr);
     if (herr != hipSuccess) {
         GST_ERROR_OBJECT(self, "nv12_to_xrgb8888 launch failed: %s", hipGetErrorString(herr));
-        hipFree(d_y); hipFree(d_uv);
+        (void)hipFree(d_y); (void)hipFree(d_uv);
         return GST_FLOW_ERROR;
     }
     herr = hipStreamSynchronize(self->hip_stream);
-    hipFree(d_y); hipFree(d_uv);
+    (void)hipFree(d_y); (void)hipFree(d_uv);
     if (herr != hipSuccess)
         GST_WARNING_OBJECT(self, "hipStreamSynchronize: %s", hipGetErrorString(herr));
 
@@ -700,9 +700,9 @@ static GstFlowReturn copy_nv12_to_gbm(GstMagmaDisplay* self, const void* src, gu
                     if (herr != hipSuccess)
                         GST_WARNING_OBJECT(self, "fps_overlay launch: %s", hipGetErrorString(herr));
                     else
-                        hipStreamSynchronize(self->hip_stream);
+                        (void)hipStreamSynchronize(self->hip_stream);
                 }
-                hipFree(d_text);
+                (void)hipFree(d_text);
             }
         }
     }
@@ -767,11 +767,11 @@ static GstFlowReturn gst_magma_display_render(GstBaseSink* sink, GstBuffer* buf)
         herr = hipExternalMemoryGetMappedBuffer(&d_src, ext_mem, &bdesc);
         if (herr != hipSuccess) {
             GST_ERROR_OBJECT(self, "hipExternalMemoryGetMappedBuffer(DMABuf) failed: %s", hipGetErrorString(herr));
-            hipDestroyExternalMemory(ext_mem);
+            (void)hipDestroyExternalMemory(ext_mem);
             return GST_FLOW_ERROR;
         }
         GstFlowReturn gret = copy_nv12_to_gbm(self, (const void*)d_src, stride, hipMemcpyDeviceToDevice);
-        hipDestroyExternalMemory(ext_mem);
+        (void)hipDestroyExternalMemory(ext_mem);
         return gret;
     }
 

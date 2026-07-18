@@ -545,13 +545,13 @@ static GstFlowReturn conv_dmabuf_nv12_to_sys_nv12(GstMagmaVideoConvert* self, Gs
                     }
                     gst_buffer_unmap(outbuf, &out_map);
                 }
-                hipDestroyExternalMemory(ext_mem);
+                (void)hipDestroyExternalMemory(ext_mem);
                 if (err == hipSuccess) {
                     close(dma_fd);
                     return GST_FLOW_OK;
                 }
             } else {
-                hipDestroyExternalMemory(ext_mem);
+                (void)hipDestroyExternalMemory(ext_mem);
             }
         }
         close(dma_fd);
@@ -740,7 +740,7 @@ static GstFlowReturn conv_sys_i420_to_dmabuf_nv12(GstMagmaVideoConvert* self, Gs
 
     // Y plane
     for (gint y = 0; y < h; y++)
-        hipMemcpyAsync((guint8*)self->d_image + y * pitch, in_map.data + y * s0, (gsize)w, hipMemcpyHostToDevice, self->hip_stream);
+        (void)hipMemcpyAsync((guint8*)self->d_image + y * pitch, in_map.data + y * s0, (gsize)w, hipMemcpyHostToDevice, self->hip_stream);
 
     // Interleave U+V → NV12 UV on host then upload
     const uint8_t* src_u = in_map.data + s0 * h;
@@ -751,7 +751,7 @@ static GstFlowReturn conv_sys_i420_to_dmabuf_nv12(GstMagmaVideoConvert* self, Gs
             uv_buf[y * pitch + x * 2] = src_u[y * su + x];
             uv_buf[y * pitch + x * 2 + 1] = src_v[y * su + x];
         }
-    hipMemcpyAsync((guint8*)self->d_image + pitch * h, uv_buf.data(), pitch * (h / 2), hipMemcpyHostToDevice, self->hip_stream);
+    (void)hipMemcpyAsync((guint8*)self->d_image + pitch * h, uv_buf.data(), pitch * (h / 2), hipMemcpyHostToDevice, self->hip_stream);
     gst_buffer_unmap(inbuf, &in_map);
 
     GstBuffer* out = dmabuf_from_gbm_bo(self, self->gpu_size, GST_VIDEO_FORMAT_NV12, w, h);
@@ -795,7 +795,7 @@ static GstFlowReturn gst_magma_videoconvert_transform(GstBaseTransform* trans, G
             GstBuffer* sys_buf = gst_buffer_new_and_alloc(total);
             GstMapInfo map;
             gst_buffer_map(sys_buf, &map, GST_MAP_WRITE);
-            hipMemcpy(map.data, hmeta->d_ptr, total, hipMemcpyDeviceToHost);
+            (void)hipMemcpy(map.data, hmeta->d_ptr, total, hipMemcpyDeviceToHost);
             gst_buffer_unmap(sys_buf, &map);
 
             gst_buffer_remove_all_memory(outbuf);

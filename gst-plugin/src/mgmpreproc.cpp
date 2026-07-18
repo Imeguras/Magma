@@ -8,8 +8,6 @@
 #include <cstring>
 #include <fcntl.h>
 #include <unistd.h>
-#include <xf86drm.h>
-#include <gbm.h>
 
 /** --- GOBJECT / GSTREAMER STUFF --- */
 GST_DEBUG_CATEGORY_STATIC(magma_preproc_debug);
@@ -29,7 +27,16 @@ enum {
 
 G_DEFINE_TYPE(GstMagmaPreproc, gst_magma_preproc, GST_TYPE_BASE_TRANSFORM)
 
-/** --- KERNEL PATH RESOLUTION --- */
+/**
+ * @brief Resolve the directory containing HIP kernel source files.
+ *
+ * Checks the MAGMA_KERNEL_DIR environment variable first; falls back
+ * to the compile-time default MAGMA_KERNEL_SRC_DIR set by the build
+ * system. The returned pointer is valid for the lifetime of the
+ * process.
+ *
+ * @return Absolute path to the kernel directory
+ */
 static const char* find_kernel_dir(void) {
     const char* env = g_getenv("MAGMA_KERNEL_DIR");
     if (env)
@@ -38,60 +45,6 @@ static const char* find_kernel_dir(void) {
 }
 
 /** --- DRM / GBM HELPERS --- */
-/**
- * @brief Open the first available DRM node for GBM usage.
- *
- * Searches /dev/dri/card0..63 and returns the first openable FD
- * that has DRM resources available.
- *
- * @return DRM FD on success, -1 on failure
- */
-static int open_drm_node(void) {
-    for (int i = 0; i < 64; i++) {
-        char path[64];
-        g_snprintf(path, sizeof(path), "/dev/dri/renderD%d", 128 + i);
-        int fd = open(path, O_RDWR);
-        if (fd < 0)
-            continue;
-        drmVersionPtr ver = drmGetVersion(fd);
-        if (ver) {
-            drmFreeVersion(ver);
-            return fd;
-        }
-        close(fd);
-    }
-    return -1;
-}
-
-/**
- * @brief Ensure the GBM device and tensor allocation DRM node are open.
- *
- * Called once per stream start. Opens a DRM node, creates a GBM
- * device, and stores them in self.
- *
- * @param self Preprocessing element
- * @return TRUE on success
- */
-static gboolean ensure_gbm_device(GstMagmaPreproc* self) {
-    if (self->gbm_ready)
-        return TRUE;
-    self->drm_fd = open_drm_node();
-    if (self->drm_fd < 0) {
-        GST_ERROR_OBJECT(self, "Failed to open DRM device");
-        return FALSE;
-    }
-    self->gbm = gbm_create_device(self->drm_fd);
-    if (!self->gbm) {
-        GST_ERROR_OBJECT(self, "gbm_create_device failed");
-        close(self->drm_fd);
-        self->drm_fd = -1;
-        return FALSE;
-    }
-    self->gbm_ready = TRUE;
-    GST_INFO_OBJECT(self, "GBM device opened (fd=%d)", self->drm_fd);
-    return TRUE;
-}
-
 /** --- TENSOR OUTPUT (DMABuf-backed) --- */
 /**
  * @brief Allocate the tensor DMABuf for preprocessing output.
@@ -143,7 +96,13 @@ static gboolean ensure_tensor(GstMagmaPreproc* self) {
     return TRUE;
 }
 
-/** --- PROPERTIES --- */
+/**
+ * @brief Set a GObject property on the preprocessing element.
+ *
+ * Supports net-width, net-height, scale-factor, enable-roi,
+ * and roi-x/y/w/h. All properties take effect on the next
+ * frame processed.
+ */
 static void gst_magma_preproc_set_property(GObject* object, guint prop_id, const GValue* value, GParamSpec* pspec) {
     GstMagmaPreproc* self = GST_MAGMA_PREPROC(object);
     switch (prop_id) {
@@ -177,6 +136,9 @@ static void gst_magma_preproc_set_property(GObject* object, guint prop_id, const
     }
 }
 
+/**
+ * @brief Retrieve a GObject property value.
+ */
 static void gst_magma_preproc_get_property(GObject* object, guint prop_id, GValue* value, GParamSpec* pspec) {
     GstMagmaPreproc* self = GST_MAGMA_PREPROC(object);
     switch (prop_id) {
@@ -210,7 +172,14 @@ static void gst_magma_preproc_get_property(GObject* object, guint prop_id, GValu
     }
 }
 
-/** --- FINALIZE --- */
+/**
+ * @brief Release all GPU resources held by the element.
+ *
+ * Unloads the JIT-compiled HIP kernel module, frees device memory
+ * for the tensor output and input upload buffer, destroys any
+ * imported external memory handle, and chains up to the parent
+ * finalize.
+ */
 static void gst_magma_preproc_finalize(GObject* object) {
     GstMagmaPreproc* self = GST_MAGMA_PREPROC(object);
 
@@ -237,15 +206,6 @@ static void gst_magma_preproc_finalize(GObject* object) {
         (void)hipFree(self->d_input_upload);
         self->d_input_upload = 0;
     }
-    if (self->gbm) {
-        gbm_device_destroy(self->gbm);
-        self->gbm = nullptr;
-    }
-    if (self->drm_fd >= 0) {
-        close(self->drm_fd);
-        self->drm_fd = -1;
-    }
-
     G_OBJECT_CLASS(gst_magma_preproc_parent_class)->finalize(object);
 }
 
@@ -253,7 +213,14 @@ static void gst_magma_preproc_finalize(GObject* object) {
 static GstStaticPadTemplate sink_template = GST_STATIC_PAD_TEMPLATE("sink", GST_PAD_SINK, GST_PAD_ALWAYS, GST_STATIC_CAPS("video/x-raw(memory:DMABuf),format=(string)NV12"));
 
 static GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE("src", GST_PAD_SRC, GST_PAD_ALWAYS, GST_STATIC_CAPS("video/x-raw(memory:DMABuf),format=(string)NV12"));
-/** --- INIT --- */
+/**
+ * @brief Initialise a new GstMagmaPreproc instance.
+ *
+ * Sets default property values (224×224, scale=1/255), clears
+ * all GPU pointers and kernel handles to zero, and enables
+ * in-place transform mode so the element modifies the input
+ * buffer rather than allocating new output buffers.
+ */
 static void gst_magma_preproc_init(GstMagmaPreproc* self) {
     self->net_width = 224;
     self->net_height = 224;
@@ -275,9 +242,6 @@ static void gst_magma_preproc_init(GstMagmaPreproc* self) {
     self->kernel_nv12_to_rgb = nullptr;
     self->kernel_ready = FALSE;
 
-    self->drm_fd = -1;
-    self->gbm = nullptr;
-    self->gbm_ready = FALSE;
     self->tensor_dmabuf_fd = -1;
     self->tensor_ext_mem = nullptr;
     self->d_tensor_output = nullptr;
@@ -287,7 +251,13 @@ static void gst_magma_preproc_init(GstMagmaPreproc* self) {
     gst_base_transform_set_in_place(GST_BASE_TRANSFORM(self), TRUE);
 }
 
-/** --- CAPS NEGOTIATION --- */
+/**
+ * @brief Passthrough caps negotiation — accept NV12 on both sides.
+ *
+ * Returns the intersection of the proposed caps and the optional
+ * filter caps. The element does not re-negotiate format; the
+ * transform is in-place.
+ */
 static GstCaps* gst_magma_preproc_transform_caps(GstBaseTransform* trans, GstPadDirection direction, GstCaps* caps, GstCaps* filter) {
     GstCaps* result = gst_caps_ref(caps);
     if (filter) {
@@ -298,6 +268,15 @@ static GstCaps* gst_magma_preproc_transform_caps(GstBaseTransform* trans, GstPad
     return result;
 }
 
+/**
+ * @brief Configure the element for a new input/output caps pair.
+ *
+ * Extracts source frame dimensions and format from the input caps,
+ * validates that the format is NV12, and allocates the tensor output
+ * buffer via ensure_tensor(). Called once per stream start.
+ *
+ * @return TRUE on success
+ */
 static gboolean gst_magma_preproc_set_caps(GstBaseTransform* trans, GstCaps* incaps, GstCaps* outcaps) {
     GstMagmaPreproc* self = GST_MAGMA_PREPROC(trans);
     GstStructure* s = gst_caps_get_structure(incaps, 0);
@@ -322,6 +301,9 @@ static gboolean gst_magma_preproc_set_caps(GstBaseTransform* trans, GstCaps* inc
     return TRUE;
 }
 
+/**
+ * @brief Suggests output buffer size equals input size (in-place).
+ */
 static gboolean gst_magma_preproc_transform_ip_size(GstBaseTransform* trans, GstPadDirection direction, GstCaps* caps, gsize size, GstCaps* othercaps, gsize* othersize) {
     *othersize = size;
     return TRUE;
@@ -490,12 +472,25 @@ static GstFlowReturn gst_magma_preproc_transform_ip(GstBaseTransform* trans, Gst
     return GST_FLOW_OK;
 }
 
-/** --- PLUGIN REGISTRATION --- */
+/**
+ * @brief Plugin entry point — register the mgmpreproc element.
+ *
+ * Initialises the debug category and registers GstMagmaPreproc
+ * with GStreamer under the element name "mgmpreproc".
+ */
 static gboolean plugin_init(GstPlugin* plugin) {
     GST_DEBUG_CATEGORY_INIT(magma_preproc_debug, "magma_preproc", 0, "Magma GPU Preprocessor");
     return gst_element_register(plugin, "mgmpreproc", GST_RANK_NONE, GST_TYPE_MAGMA_PREPROC);
 }
 
+/**
+ * @brief Initialise the GstMagmaPreproc class.
+ *
+ * Installs properties (net-width, net-height, scale-factor, ROI),
+ * pad templates (NV12 in/out), and wires up the GstBaseTransform
+ * virtual methods (set_caps, transform_ip, transform_caps,
+ * transform_size).
+ */
 static void gst_magma_preproc_class_init(GstMagmaPreprocClass* klass) {
     GstElementClass* element_class = GST_ELEMENT_CLASS(klass);
     GObjectClass* object_class = G_OBJECT_CLASS(klass);

@@ -33,41 +33,44 @@ G_DECLARE_FINAL_TYPE(GstMagmaPreproc, gst_magma_preproc, GST, MAGMA_PREPROC, Gst
 struct _GstMagmaPreproc {
     GstBaseTransform parent;
 
-    gint net_width;
-    gint net_height;
-    gfloat scale_factor;
+    /* ── Properties ──────────────────────────────────────────── */
+    gint net_width;      /**< Target tensor width (pixels) */
+    gint net_height;     /**< Target tensor height (pixels) */
+    gfloat scale_factor; /**< Pixel multiplier applied after normalisation */
 
-    gboolean enable_roi;
-    gint roi_x;
-    gint roi_y;
-    gint roi_w;
-    gint roi_h;
+    gboolean enable_roi; /**< If TRUE, crop source to ROI before resize */
+    gint roi_x;          /**< ROI left coordinate in source frame */
+    gint roi_y;          /**< ROI top coordinate in source frame */
+    gint roi_w;          /**< ROI width */
+    gint roi_h;          /**< ROI height */
 
-    gint in_width;
-    gint in_height;
-    GstVideoFormat in_format;
+    /* ── Source frame info (set by set_caps) ─────────────────── */
+    gint in_width;       /**< Source frame width */
+    gint in_height;      /**< Source frame height */
+    GstVideoFormat in_format; /**< Source pixel format (must be NV12) */
 
-    hipStream_t hip_stream;
+    /* ── HIP stream ──────────────────────────────────────────── */
+    hipStream_t hip_stream; /**< Shared HIP stream for all GPU ops */
 
-    hipExternalMemory_t external_memory;
-    hipDeviceptr_t d_image;
-    hipDeviceptr_t d_input_upload;
+    /* ── Input frame (DMABuf import or H2D upload) ───────────── */
+    hipExternalMemory_t external_memory; /**< External mem handle for imported DMABuf */
+    hipDeviceptr_t d_image;              /**< GPU pointer to NV12 input frame */
+    hipDeviceptr_t d_input_upload;       /**< Fallback H2D upload buffer */
 
-    hipModule_t kernel_module;
-    hipFunction_t kernel_nv12_to_rgb;
-    gboolean kernel_ready;
+    /* ── Preprocessing kernel ────────────────────────────────── */
+    hipModule_t kernel_module;     /**< JIT-compiled HIP module (preproc_kernels.hip) */
+    hipFunction_t kernel_nv12_to_rgb; /**< nv12_to_rgb_normalised kernel function */
+    gboolean kernel_ready;         /**< TRUE after first successful compile */
 
-    int drm_fd;
-    struct gbm_device* gbm;
-    gboolean gbm_ready;
+    /* ── Tensor output (DMABuf-backed) ───────────────────────── */
+    int tensor_dmabuf_fd;          /**< DMABuf FD for the output tensor */
+    hipExternalMemory_t tensor_ext_mem; /**< Not used (legacy placeholder) */
+    float* d_tensor_output;        /**< GPU pointer to float32 RGB tensor */
+    GstMemory* tensor_mem;         /**< GstMemory wrapping the DMABuf tensor */
+    gsize tensor_alloc_size;       /**< Allocated byte size of the tensor buffer */
 
-    int tensor_dmabuf_fd;
-    hipExternalMemory_t tensor_ext_mem;
-    float* d_tensor_output;
-    GstMemory* tensor_mem;
-    gsize tensor_alloc_size;
-
-    gboolean imported;
+    /* ── State ───────────────────────────────────────────────── */
+    gboolean imported; /**< TRUE when input DMABuf is imported to HIP */
 };
 
 G_END_DECLS

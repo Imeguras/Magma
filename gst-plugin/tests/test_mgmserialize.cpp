@@ -164,7 +164,7 @@ GST_START_TEST(test_serialize_json)
     const gchar *json = (const gchar *)info.data;
 
     /* verify structure */
-    ck_assert_str_eq(("" + std::to_string(count_json_objects(json))).c_str(), "2");
+    ck_assert_int_eq(count_json_objects(json), 2);
     gchar val[64];
     ck_assert(find_json_value(json, "source_width", val, sizeof(val)));
     ck_assert_str_eq(val, "640");
