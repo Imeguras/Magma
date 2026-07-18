@@ -15,6 +15,7 @@ GST_DEBUG_CATEGORY_STATIC(magma_display_debug);
 enum {
     PROP_0,
     PROP_SYNC,
+    PROP_SHOW_FPS,
 };
 
 
@@ -333,6 +334,9 @@ static void gst_magma_display_set_property(GObject* object, guint prop_id, const
     case PROP_SYNC:
         self->sync = g_value_get_boolean(value);
         break;
+    case PROP_SHOW_FPS:
+        self->show_fps = g_value_get_boolean(value);
+        break;
     default:
         G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
         break;
@@ -344,6 +348,9 @@ static void gst_magma_display_get_property(GObject* object, guint prop_id, GValu
     switch (prop_id) {
     case PROP_SYNC:
         g_value_set_boolean(value, self->sync);
+        break;
+    case PROP_SHOW_FPS:
+        g_value_set_boolean(value, self->show_fps);
         break;
     default:
         G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
@@ -617,6 +624,89 @@ static GstFlowReturn copy_nv12_to_gbm(GstMagmaDisplay* self, const void* src, gu
     if (herr != hipSuccess)
         GST_WARNING_OBJECT(self, "hipStreamSynchronize: %s", hipGetErrorString(herr));
 
+    // ── FPS overlay ─────────────────────────────────────────────────
+    if (self->show_fps) {
+        guint64 now = g_get_monotonic_time();
+        if (self->fps_last_time > 0) {
+            guint64 delta = now - self->fps_last_time;
+            if (delta > 0) {
+                self->fps_instant = 1000000.0 / (gdouble)delta;
+                if (self->fps_avg < 0.001)
+                    self->fps_avg = self->fps_instant;
+                else
+                    self->fps_avg += self->fps_ema_factor * (self->fps_instant - self->fps_avg);
+            }
+        }
+        self->fps_last_time = now;
+
+        if (!self->fps_func) {
+            std::string kpath = std::string(MAGMA_KERNEL_SRC_DIR) + "/fps_overlay.hip";
+            HipKernel k = compile_kernel(kpath.c_str(), "fps_overlay_kernel", nullptr);
+            if (k.func) {
+                self->fps_module = k.module;
+                self->fps_func = k.func;
+            }
+        }
+
+        if (self->fps_func) {
+            unsigned char text_idx[16];
+            int text_len = 0;
+
+            int inst_i = (int)self->fps_instant;
+            int inst_f = (int)((self->fps_instant - inst_i) * 10.0 + 0.5);
+            if (inst_i > 99) inst_i = 99;
+            if (inst_f > 9) inst_f = 9;
+
+            int avg_i = (int)self->fps_avg;
+            int avg_f = (int)((self->fps_avg - avg_i) * 10.0 + 0.5);
+            if (avg_i > 99) avg_i = 99;
+            if (avg_f > 9) avg_f = 9;
+
+            // Font indices: 0-9=digits, 10=F, 11=P, 12=S, 13=:, 14=., 15=(, 16=), 17=space
+            text_idx[text_len++] = 10; // F
+            text_idx[text_len++] = 11; // P
+            text_idx[text_len++] = 12; // S
+            text_idx[text_len++] = 13; // :
+            text_idx[text_len++] = (unsigned char)(inst_i / 10);
+            text_idx[text_len++] = (unsigned char)(inst_i % 10);
+            text_idx[text_len++] = 14; // .
+            text_idx[text_len++] = (unsigned char)(inst_f);
+            text_idx[text_len++] = 17; // space
+            text_idx[text_len++] = 15; // (
+            text_idx[text_len++] = (unsigned char)(avg_i / 10);
+            text_idx[text_len++] = (unsigned char)(avg_i % 10);
+            text_idx[text_len++] = 14; // .
+            text_idx[text_len++] = (unsigned char)(avg_f);
+            text_idx[text_len++] = 16; // )
+
+            hipDeviceptr_t d_text = 0;
+            herr = hipMalloc(&d_text, sizeof(unsigned char) * text_len);
+            if (herr == hipSuccess) {
+                herr = hipMemcpy(d_text, text_idx, sizeof(unsigned char) * text_len, hipMemcpyHostToDevice);
+                if (herr == hipSuccess) {
+                    int pos_x = 15;
+                    int pos_y = 15;
+                    unsigned int fg_color = 0xFF00FF00; // green
+                    int img_w = self->mode.hdisplay;
+                    int img_h = self->mode.vdisplay;
+                    void* args[] = {
+                        &d_dst, &dst_stride_pixels, &img_w, &img_h,
+                        &d_text, &text_len, &pos_x, &pos_y, &fg_color
+                    };
+                    herr = hipModuleLaunchKernel(self->fps_func,
+                                                  1, 1, 1,
+                                                  32, 1, 1,
+                                                  0, self->hip_stream, args, nullptr);
+                    if (herr != hipSuccess)
+                        GST_WARNING_OBJECT(self, "fps_overlay launch: %s", hipGetErrorString(herr));
+                    else
+                        hipStreamSynchronize(self->hip_stream);
+                }
+                hipFree(d_text);
+            }
+        }
+    }
+
     return gbm_bo_to_display(self);
 }
 
@@ -736,6 +826,14 @@ static void gst_magma_display_init(GstMagmaDisplay* self) {
     self->hip_stream = nullptr;
     self->rgb_module = nullptr;
     self->nv12_to_rgb_func = nullptr;
+
+    self->show_fps = FALSE;
+    self->fps_instant = 0.0;
+    self->fps_avg = 0.0;
+    self->fps_ema_factor = 0.1;
+    self->fps_last_time = 0;
+    self->fps_module = nullptr;
+    self->fps_func = nullptr;
 }
 
 static void gst_magma_display_finalize(GObject* object) {
@@ -744,6 +842,11 @@ static void gst_magma_display_finalize(GObject* object) {
         (void)hipModuleUnload(self->rgb_module);
         self->rgb_module = nullptr;
         self->nv12_to_rgb_func = nullptr;
+    }
+    if (self->fps_module) {
+        (void)hipModuleUnload(self->fps_module);
+        self->fps_module = nullptr;
+        self->fps_func = nullptr;
     }
     if (self->drm_initialized)
         gst_magma_display_stop(GST_BASE_SINK(self));
@@ -764,6 +867,12 @@ static void gst_magma_display_class_init(GstMagmaDisplayClass* klass) {
         g_param_spec_boolean("sync", "Sync to vblank",
                             "Wait for vertical blank before flipping (vsync)",
                             TRUE, G_PARAM_READWRITE));
+
+    g_object_class_install_property(
+        gobject_class, PROP_SHOW_FPS,
+        g_param_spec_boolean("show-fps", "Show FPS",
+                            "Overlay FPS counter (instant + rolling average) on the display",
+                            FALSE, G_PARAM_READWRITE));
 
     static GstStaticPadTemplate sink_template = GST_STATIC_PAD_TEMPLATE(
         "sink", GST_PAD_SINK, GST_PAD_ALWAYS,

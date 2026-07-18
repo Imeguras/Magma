@@ -12,9 +12,31 @@
 GST_DEBUG_CATEGORY_STATIC(magma_osd_debug);
 #define GST_CAT_DEFAULT magma_osd_debug
 
+/* ---------- COCO class names ---------- */
+static const char* coco_names[] = {
+    "person", "bicycle", "car", "motorcycle", "airplane",
+    "bus", "train", "truck", "boat", "traffic light",
+    "fire hydrant", "stop sign", "parking meter", "bench", "bird",
+    "cat", "dog", "horse", "sheep", "cow",
+    "elephant", "bear", "zebra", "giraffe", "backpack",
+    "umbrella", "handbag", "tie", "suitcase", "frisbee",
+    "skis", "snowboard", "sports ball", "kite", "baseball bat",
+    "baseball glove", "skateboard", "surfboard", "tennis racket", "bottle",
+    "wine glass", "cup", "fork", "knife", "spoon",
+    "bowl", "banana", "apple", "sandwich", "orange",
+    "broccoli", "carrot", "hot dog", "pizza", "donut",
+    "cake", "chair", "couch", "potted plant", "bed",
+    "dining table", "toilet", "tv", "laptop", "mouse",
+    "remote", "keyboard", "cell phone", "microwave", "oven",
+    "toaster", "sink", "refrigerator", "book", "clock",
+    "vase", "scissors", "teddy bear", "hair drier", "toothbrush",
+};
+#define COCO_NUM_CLASSES (sizeof(coco_names)/sizeof(coco_names[0]))
+
 /* ---------- properties ---------- */
 enum {
     PROP_0,
+    PROP_SHOW_LABELS,
     PROP_LINE_WIDTH,
     PROP_ROI_X, PROP_ROI_Y, PROP_ROI_W, PROP_ROI_H,
 };
@@ -58,7 +80,8 @@ static const YuvColor palette_yuv[] = {
 struct BoxParam {
     int x, y, w, h;
     unsigned char y_val, u_val, v_val;
-    unsigned char _pad[1];
+    unsigned char _pad;
+    unsigned char label[8];
 };
 
 /* ---------- kernel directory lookup ---------- */
@@ -218,7 +241,24 @@ static GstFlowReturn gst_magma_osd_transform_ip(GstBaseTransform* trans,
         params[nparams].y_val = palette_yuv[cid].y;
         params[nparams].u_val = palette_yuv[cid].u;
         params[nparams].v_val = palette_yuv[cid].v;
-        params[nparams]._pad[0] = 0;
+        params[nparams]._pad = 0;
+
+        /* build label string (max 7 chars) */
+        if (self->show_labels) {
+            const char* name = coco_names[obj->class_id % COCO_NUM_CLASSES];
+            int slen = (int)strlen(name);
+            if (slen > 6) {
+                memcpy(params[nparams].label, name, 6);
+                params[nparams].label[6] = '.';
+                params[nparams].label[7] = '\0';
+            } else {
+                memcpy(params[nparams].label, name, (size_t)slen);
+                params[nparams].label[slen] = '\0';
+            }
+        } else {
+            params[nparams].label[0] = '\0';
+        }
+
         nparams++;
     }
 
@@ -289,9 +329,11 @@ static GstFlowReturn gst_magma_osd_transform_ip(GstBaseTransform* trans,
 
     int block = 64;
     int grid = (nparams + block - 1) / block;
+    int show_labels_val = self->show_labels ? 1 : 0;
     void* args[] = { &d_y, &d_uv, &y_stride, &uv_stride,
                      &self->in_width, &self->in_height,
-                     &self->d_boxes, &nparams, &self->line_width };
+                     &self->d_boxes, &nparams, &self->line_width,
+                     &show_labels_val };
 
     e = hipModuleLaunchKernel(self->kernel_func, grid, 1, 1, block, 1, 1,
                                0, self->hip_stream, args, nullptr);
@@ -345,11 +387,12 @@ static void gst_magma_osd_set_property(GObject* object, guint prop_id,
                                         GParamSpec* pspec) {
     GstMagmaOsd* self = GST_MAGMA_OSD(object);
     switch (prop_id) {
-    case PROP_LINE_WIDTH: self->line_width = g_value_get_uint(value); break;
-    case PROP_ROI_X:      self->roi_x = g_value_get_uint(value); break;
-    case PROP_ROI_Y:      self->roi_y = g_value_get_uint(value); break;
-    case PROP_ROI_W:      self->roi_w = g_value_get_uint(value); break;
-    case PROP_ROI_H:      self->roi_h = g_value_get_uint(value); break;
+    case PROP_SHOW_LABELS: self->show_labels = g_value_get_boolean(value); break;
+    case PROP_LINE_WIDTH:  self->line_width = g_value_get_uint(value); break;
+    case PROP_ROI_X:       self->roi_x = g_value_get_uint(value); break;
+    case PROP_ROI_Y:       self->roi_y = g_value_get_uint(value); break;
+    case PROP_ROI_W:       self->roi_w = g_value_get_uint(value); break;
+    case PROP_ROI_H:       self->roi_h = g_value_get_uint(value); break;
     default: G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec); break;
     }
 }
@@ -358,11 +401,12 @@ static void gst_magma_osd_get_property(GObject* object, guint prop_id,
                                         GValue* value, GParamSpec* pspec) {
     GstMagmaOsd* self = GST_MAGMA_OSD(object);
     switch (prop_id) {
-    case PROP_LINE_WIDTH: g_value_set_uint(value, self->line_width); break;
-    case PROP_ROI_X:      g_value_set_uint(value, self->roi_x); break;
-    case PROP_ROI_Y:      g_value_set_uint(value, self->roi_y); break;
-    case PROP_ROI_W:      g_value_set_uint(value, self->roi_w); break;
-    case PROP_ROI_H:      g_value_set_uint(value, self->roi_h); break;
+    case PROP_SHOW_LABELS: g_value_set_boolean(value, self->show_labels); break;
+    case PROP_LINE_WIDTH:  g_value_set_uint(value, self->line_width); break;
+    case PROP_ROI_X:       g_value_set_uint(value, self->roi_x); break;
+    case PROP_ROI_Y:       g_value_set_uint(value, self->roi_y); break;
+    case PROP_ROI_W:       g_value_set_uint(value, self->roi_w); break;
+    case PROP_ROI_H:       g_value_set_uint(value, self->roi_h); break;
     default: G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec); break;
     }
 }
@@ -379,6 +423,7 @@ static void gst_magma_osd_finalize(GObject* object) {
 static void gst_magma_osd_init(GstMagmaOsd* self) {
     self->in_width = self->in_height = 0;
     self->line_width = 2;
+    self->show_labels = TRUE;
     self->roi_x = self->roi_y = self->roi_w = self->roi_h = 0;
     self->hip_stream = nullptr;
     self->kernel_module = nullptr;
@@ -402,6 +447,10 @@ static void gst_magma_osd_class_init(GstMagmaOsdClass* klass) {
     gobject_class->get_property = gst_magma_osd_get_property;
     gobject_class->finalize = gst_magma_osd_finalize;
 
+    g_object_class_install_property(gobject_class, PROP_SHOW_LABELS,
+        g_param_spec_boolean("show-labels","Show labels",
+            "Show class label text on bounding boxes",
+            TRUE,G_PARAM_READWRITE));
     g_object_class_install_property(gobject_class, PROP_LINE_WIDTH,
         g_param_spec_uint("line-width","Line width",
             "Width of bounding box outlines in pixels",

@@ -45,6 +45,10 @@ struct _GstMagmaH264Dec {
 
     uint8_t* codec_data;
     gsize codec_data_size;
+
+    /* Frame buffer pool: avoids hipMalloc/hipFree per frame */
+#define FRAME_POOL_SIZE 16
+    GAsyncQueue* pool_free;
 };
 
 G_END_DECLS

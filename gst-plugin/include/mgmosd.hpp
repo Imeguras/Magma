@@ -52,6 +52,8 @@ struct _GstMagmaOsd {
 
     hipDeviceptr_t d_boxes;
 
+    gboolean show_labels;
+
     hipDeviceptr_t d_input_upload;
 };
 

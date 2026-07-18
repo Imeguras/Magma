@@ -32,7 +32,8 @@ G_DECLARE_FINAL_TYPE(GstMagmaDisplay, gst_magma_display, GST, MAGMA_DISPLAY, Gst
  * The CRTC always receives an XRGB8888 framebuffer for maximum
  * hardware compatibility.
  *
- * @property sync  Whether to wait for VBlank sync (default: true)
+ * @property sync      Whether to wait for VBlank sync (default: true)
+ * @property show-fps  Overlay FPS counter (instant + rolling average) on the display
  */
 struct _GstMagmaDisplay {
     GstBaseSink parent;
@@ -65,6 +66,16 @@ struct _GstMagmaDisplay {
 
     hipModule_t rgb_module;
     hipFunction_t nv12_to_rgb_func;
+
+    gboolean show_fps;
+
+    gdouble fps_instant;
+    gdouble fps_avg;
+    gdouble fps_ema_factor;
+    guint64 fps_last_time;
+
+    hipModule_t fps_module;
+    hipFunction_t fps_func;
 
     guint64 frames_rendered;
 };
