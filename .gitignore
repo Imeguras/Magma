@@ -20,8 +20,9 @@ benchmarks/results.txt
 profiles
 .rocprofv*
 
-# docs
-docs/html
+# docs (Doxygen XML + Sphinx HTML output)
+docs/_doxygen
+docs/_build
 
 .cache/*
 

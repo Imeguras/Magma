@@ -2,7 +2,6 @@
 #include "magma-meta.h"
 #include "magma-hip-stream.hpp"
 
-// Local copy of RocVideoDecoder utility (modified for Magma)
 #include "roc_video_dec.h"
 #include <rocprofiler-sdk-roctx/roctx.h>
 #include <gst/allocators/gstdmabuf.h>
@@ -19,10 +18,6 @@ GST_DEBUG_CATEGORY_STATIC(magma_h264_dec_debug);
 
 G_DEFINE_TYPE(GstMagmaH264Dec, gst_magma_h264_dec, GST_TYPE_VIDEO_DECODER)
 
-// ─── Release context for MagmaHipMeta ─────────────────────────────────
-// Returns the buffer to the frame pool (or hipFree if non-pooled).
-// The INTERNAL decoder surface is released immediately after the copy,
-// not when downstream frees the buffer.
 struct HipReleaseCtx {
     hipDeviceptr_t d_ptr;
     GAsyncQueue* pool_free;
@@ -39,7 +34,6 @@ static void hip_release_func(void* data) {
     delete ctx;
 }
 
-// ─── Pending frame queue helpers (linear array, no holes) ───────────
 static void pending_push(GstMagmaH264Dec* self, GstVideoCodecFrame* frame, int64_t pts_roc) {
     if (self->pending_count >= MAX_PENDING_FRAMES) {
         GST_WARNING_OBJECT(self, "Pending frame queue overflow!");
@@ -60,7 +54,6 @@ static PendingFrame* pending_front(GstMagmaH264Dec* self) {
 static void pending_pop_front(GstMagmaH264Dec* self) {
     if (self->pending_count == 0)
         return;
-    // Compact: move all entries forward
     self->pending_count--;
     for (gint i = 0; i < self->pending_count; i++)
         self->pending[i] = self->pending[i + 1];
@@ -70,7 +63,6 @@ static GstVideoCodecFrame* pending_match(GstMagmaH264Dec* self, int64_t pts_roc)
     for (gint i = 0; i < self->pending_count; i++) {
         if (self->pending[i].pts_roc == pts_roc) {
             GstVideoCodecFrame* f = self->pending[i].frame;
-            // Remove by compaction
             self->pending_count--;
             for (gint j = i; j < self->pending_count; j++)
                 self->pending[j] = self->pending[j + 1];
@@ -80,15 +72,12 @@ static GstVideoCodecFrame* pending_match(GstMagmaH264Dec* self, int64_t pts_roc)
     return nullptr;
 }
 
-// ─── Finish a pending frame with the given output buffer ─────────────
 static void finish_pending_frame(GstVideoDecoder* decoder, GstVideoCodecFrame* frame, GstBuffer* out_buf, int64_t pts_ns) {
     frame->pts = pts_ns;
     frame->output_buffer = out_buf;
     gst_video_decoder_finish_frame(decoder, frame);
 }
 
-// ─── Pad templates ─────────────────────────────────────────────────────
-// We accept AVC/AVCC (length-prefixed) or byte-stream and convert to Annex B
 static GstStaticPadTemplate sink_template = GST_STATIC_PAD_TEMPLATE("sink",
                                                                     GST_PAD_SINK,
                                                                     GST_PAD_ALWAYS,
@@ -104,11 +93,6 @@ static GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE("src",
                                                                                    "video/x-raw(memory:DMABuf), format=NV12; "
                                                                                    "video/x-raw(memory:DMABuf), format=I420"));
 
-// ─── AVCC → Annex B conversion ───────────────────────────────────────
-// rocDecode parser expects Annex B (start codes 0x00000001), but
-// h264parse typically outputs AVC (4-byte length prefix) format.
-// We convert here.
-
 static void append_annex_b_nal(std::vector<uint8_t>& out, const uint8_t* data, uint32_t size) {
     out.push_back(0x00);
     out.push_back(0x00);
@@ -117,8 +101,8 @@ static void append_annex_b_nal(std::vector<uint8_t>& out, const uint8_t* data, u
     out.insert(out.end(), data, data + size);
 }
 
-static std::vector<uint8_t> convert_avcc_to_annex_b(const uint8_t* avcc_data, size_t avcc_size) {
-    std::vector<uint8_t> out;
+static void convert_avcc_to_annex_b(const uint8_t* avcc_data, size_t avcc_size, std::vector<uint8_t>& out) {
+    out.clear();
     size_t i = 0;
     while (i + 4 <= avcc_size) {
         uint32_t nal_size = ((uint32_t)avcc_data[i] << 24) | ((uint32_t)avcc_data[i + 1] << 16) | ((uint32_t)avcc_data[i + 2] << 8) | (uint32_t)avcc_data[i + 3];
@@ -129,18 +113,8 @@ static std::vector<uint8_t> convert_avcc_to_annex_b(const uint8_t* avcc_data, si
         } else
             break;
     }
-    return out;
 }
 
-// Decode AVCC codec_data (extradata) into Annex B bytes.
-// codec_data format (ISO 14496-15):
-//   byte 0: version (0x01)
-//   byte 1: profile
-//   byte 2: compatibility
-//   byte 3: level
-//   byte 4: (0xFC | (nal_length_size_minus_1 & 0x03))   — top 6 bits reserved, bottom 2 = lengthSizeMinusOne
-//   byte 5: (0xE0 | (num_sps & 0x1F))                   — top 3 bits reserved, bottom 5 = num SPS
-//   byte 6+: SPS NALs (2-byte length prefix each), then num_pps byte, then PPS NALs
 static std::vector<uint8_t> codec_data_to_annex_b(const uint8_t* cd, size_t cd_size) {
     std::vector<uint8_t> out;
     if (!cd || cd_size < 7)
@@ -170,31 +144,26 @@ static std::vector<uint8_t> codec_data_to_annex_b(const uint8_t* cd, size_t cd_s
     return out;
 }
 
-// ─── start / stop ─────────────────────────────────────────────────────
 static gboolean gst_magma_h264_dec_start(GstVideoDecoder* decoder) {
     auto* self = GST_MAGMA_H264_DEC(decoder);
 
-    // Input from h264parse is already packetized (one frame per buffer)
     gst_video_decoder_set_packetized(decoder, TRUE);
 
-    // Use the shared Magma stream for all GPU operations.
-    // This guarantees ordering between decode copies and downstream
-    // kernels (preproc, inference) without host-side sync.
     magma_get_shared_hip_stream();
 
     self->pool_free = g_async_queue_new();
 
     try {
-        self->roc_decoder = new RocVideoDecoder(0,                            // device_id = 0 (first GPU)
-                                                OUT_SURFACE_MEM_DEV_INTERNAL, // raw decoder surfaces
-                                                rocDecVideoCodec_AVC,         // H.264
-                                                false,                        // allow B-frame reordering
-                                                nullptr,                      // crop rect
-                                                false,                        // extract SEI
-                                                0,                            // display delay
-                                                0,                            // max_width (auto)
-                                                0,                            // max_height (auto)
-                                                10000000                      // clk_rate — 10MHz (100ns PTS units, matches GStreamer ns/100)
+        self->roc_decoder = new RocVideoDecoder(0,
+                                                OUT_SURFACE_MEM_DEV_INTERNAL,
+                                                rocDecVideoCodec_AVC,
+                                                false,
+                                                nullptr,
+                                                false,
+                                                0,
+                                                0,
+                                                0,
+                                                10000000
         );
 
         self->width = 0;
@@ -214,7 +183,6 @@ static gboolean gst_magma_h264_dec_stop(GstVideoDecoder* decoder) {
 
     self->pending_count = 0;
 
-    // Drain and free the frame pool
     if (self->pool_free) {
         void* ptr;
         while ((ptr = g_async_queue_try_pop(self->pool_free)) != nullptr)
@@ -235,14 +203,12 @@ static gboolean gst_magma_h264_dec_stop(GstVideoDecoder* decoder) {
     return TRUE;
 }
 
-// ─── set_format — called when caps are negotiated ───────────────────
 static gboolean gst_magma_h264_dec_set_format(GstVideoDecoder* decoder, GstVideoCodecState* state) {
     auto* self = GST_MAGMA_H264_DEC(decoder);
 
     GstCaps* caps = state->caps;
     GstStructure* s = gst_caps_get_structure(caps, 0);
 
-    // Extract codec_data (SPS/PPS) from caps and convert to Annex B
     g_free(self->codec_data);
     self->codec_data = nullptr;
     self->codec_data_size = 0;
@@ -257,7 +223,7 @@ static gboolean gst_magma_h264_dec_set_format(GstVideoDecoder* decoder, GstVideo
                 self->codec_data = (uint8_t*)g_malloc(anb.size());
                 memcpy(self->codec_data, anb.data(), anb.size());
                 self->codec_data_size = anb.size();
-                GST_INFO_OBJECT(self, "codec_data: %zu bytes → %zu bytes Annex B", cd_map.size, anb.size());
+                GST_INFO_OBJECT(self, "codec_data: %zu bytes -> %zu bytes Annex B", cd_map.size, anb.size());
             }
             gst_buffer_unmap(cd_buf, &cd_map);
         }
@@ -271,8 +237,6 @@ static gboolean gst_magma_h264_dec_set_format(GstVideoDecoder* decoder, GstVideo
     return TRUE;
 }
 
-// ─── HIP kernel: deinterleave NV12 UV plane → I420 separate U/V ────
-// Compiled via hiprtc at runtime (avoids <<<>>> syntax needing hipcc).
 static const char nv12_i420_kernel_src[] = "extern \"C\" __global__ void nv12_to_i420("
                                            "    unsigned char* dst_u, unsigned char* dst_v,"
                                            "    const unsigned char* src_uv, int src_pitch,"
@@ -285,7 +249,6 @@ static const char nv12_i420_kernel_src[] = "extern \"C\" __global__ void nv12_to
                                            "  dst_v[y * (width / 2) + x] = src_uv[off + 1];"
                                            "}";
 
-// Cache the compiled kernel module+function
 static hipModule_t nv12_i420_module = nullptr;
 static hipFunction_t nv12_i420_func = nullptr;
 
@@ -303,7 +266,6 @@ static hipError_t ensure_nv12_i420_kernel(GstMagmaH264Dec* self) {
     hipDeviceProp_t props{};
     (void)hipGetDeviceProperties(&props, 0);
     std::string arch_str = std::string("--gpu-architecture=") + props.gcnArchName;
-    // gcnArchName may include a trailing colon+features — strip at ':'
     auto colon = arch_str.find(':');
     if (colon != std::string::npos)
         arch_str.resize(colon);
@@ -332,13 +294,6 @@ static hipError_t ensure_nv12_i420_kernel(GstMagmaH264Dec* self) {
     return e;
 }
 
-// ─── Create output GstBuffer from a decoded HIP frame ───────────────
-// INTERNAL surfaces have separate Y/UV pointers with hardware pitch.
-// We copy into a contiguous I420 or NV12 buffer in HIP memory, then
-// immediately release the INTERNAL surface. The copy is enqueued on
-// the shared Magma stream, so downstream ops on the same stream are
-// ordered after the copy — no host-side sync needed.
-
 static GstBuffer* create_output_buffer(
     GstMagmaH264Dec* self, RocVideoDecoder* roc_dec, uint8_t* y_ptr, uint8_t* uv_ptr, uint32_t pitch_y, uint32_t pitch_uv, int64_t pts, int width, int height, GstVideoFormat out_fmt) {
     gboolean is_i420 = (out_fmt == GST_VIDEO_FORMAT_I420);
@@ -346,7 +301,6 @@ static GstBuffer* create_output_buffer(
     size_t uv_size = (size_t)(width / 2) * (height / 2);
     size_t frame_bytes = y_size + (is_i420 ? 2 * uv_size : uv_size);
 
-    // Lazily pre-allocate the frame pool on first call
     if (g_async_queue_length(self->pool_free) == 0) {
         for (int i = 0; i < FRAME_POOL_SIZE; i++) {
             hipDeviceptr_t p = 0;
@@ -356,7 +310,6 @@ static GstBuffer* create_output_buffer(
         GST_INFO_OBJECT(self, "Frame pool allocated: %d buffers of %zu bytes", FRAME_POOL_SIZE, frame_bytes);
     }
 
-    // Try pool first, fall back to hipMalloc
     hipDeviceptr_t d_frame = (hipDeviceptr_t)g_async_queue_try_pop(self->pool_free);
     gboolean from_pool = (d_frame != nullptr);
     if (!from_pool) {
@@ -370,11 +323,8 @@ static GstBuffer* create_output_buffer(
     uint8_t* d_y = (uint8_t*)d_frame;
     uint8_t* d_uv = d_y + y_size;
 
-    // Use the shared Magma stream — same stream as downstream preproc + inference.
-    // This guarantees ordering: copy completes before kernel reads, no host sync needed.
     hipStream_t stream = magma_get_shared_hip_stream();
 
-    // Copy Y plane: decoder's pitch_y → contiguous width
     hipError_t herr = hipMemcpy2DAsync(d_y, width, y_ptr, pitch_y, width, height, hipMemcpyDeviceToDevice, stream);
     if (herr != hipSuccess) {
         GST_ERROR_OBJECT(self, "hipMemcpy2DAsync(Y) failed: %s", hipGetErrorString(herr));
@@ -413,9 +363,6 @@ static GstBuffer* create_output_buffer(
         }
     }
 
-    // Release the INTERNAL decoder surface immediately. The copy is already
-    // enqueued on the shared Magma stream — downstream ops on the same stream
-    // will see the copied data, not the original surface. No host sync needed.
     (void)roc_dec->ReleaseFrame(pts);
 
     GstBuffer* buf = gst_buffer_new_and_alloc(16);
@@ -447,18 +394,6 @@ static GstBuffer* create_output_buffer(
     return buf;
 }
 
-// ─── handle_frame — feeds bitstream, outputs decoded frames ────────
-/**
- * @brief Decode an H.264 access unit.
- *
- * Sends the bitstream to rocDecode, manages pending frame
- * reordering, and pushes decoded frames downstream when they
- * become available in presentation order.
- *
- * @param decoder The video decoder element
- * @param frame   Incoming codec frame with H.264 data
- * @return GST_FLOW_OK on success
- */
 static GstFlowReturn gst_magma_h264_dec_handle_frame(GstVideoDecoder* decoder, GstVideoCodecFrame* frame) {
     auto* self = GST_MAGMA_H264_DEC(decoder);
 
@@ -476,33 +411,20 @@ static GstFlowReturn gst_magma_h264_dec_handle_frame(GstVideoDecoder* decoder, G
 
     auto* roc_dec = static_cast<RocVideoDecoder*>(self->roc_decoder);
 
-    GST_LOG_OBJECT(self,
-                   "Input buffer: %zu bytes, first bytes: %02x %02x %02x %02x %02x",
-                   map.size,
-                   map.size > 0 ? (unsigned)map.data[0] : 0,
-                   map.size > 1 ? (unsigned)map.data[1] : 0,
-                   map.size > 2 ? (unsigned)map.data[2] : 0,
-                   map.size > 3 ? (unsigned)map.data[3] : 0,
-                   map.size > 4 ? (unsigned)map.data[4] : 0);
-
-    // Determine if data is in AVC (AVCC, length-prefixed) or Annex B (start codes)
     gboolean is_avcc = FALSE;
     if (map.size >= 4) {
-        // Annex B: starts with 0x00 0x00 0x00 0x01 or 0x00 0x00 0x01
         bool is_annex_b = (map.data[0] == 0x00 && map.data[1] == 0x00 && map.data[2] == 0x01) || (map.data[0] == 0x00 && map.data[1] == 0x00 && map.data[2] == 0x00 && map.data[3] == 0x01);
         is_avcc = !is_annex_b;
     }
 
-    // Build the full bitstream for rocDecode: prepend codec_data (first frame only),
-    // then convert AVCC → Annex B if needed
-    std::vector<uint8_t> bitstream;
+    std::vector<uint8_t>& bitstream = self->bitstream_buf;
+    bitstream.clear();
     if (is_avcc) {
-        // Prepend codec_data on first frame or reconfig
         if (self->codec_data && self->codec_data_size > 0 && !self->configured) {
             bitstream.insert(bitstream.end(), self->codec_data, self->codec_data + self->codec_data_size);
         }
-        auto converted = convert_avcc_to_annex_b(map.data, map.size);
-        bitstream.insert(bitstream.end(), converted.begin(), converted.end());
+        convert_avcc_to_annex_b(map.data, map.size, self->avcc_buf);
+        bitstream.insert(bitstream.end(), self->avcc_buf.begin(), self->avcc_buf.end());
     } else {
         bitstream.assign(map.data, map.data + map.size);
     }
@@ -514,20 +436,16 @@ static GstFlowReturn gst_magma_h264_dec_handle_frame(GstVideoDecoder* decoder, G
         return GST_FLOW_OK;
     }
 
-    GST_LOG_OBJECT(self, "Feeding %zu bytes to decoder", data_size);
-
-    // Feed to rocDecode
     int pkt_flags = ROCDEC_PKT_TIMESTAMP;
     if (GST_BUFFER_FLAG_IS_SET(in_buf, GST_BUFFER_FLAG_MARKER))
         pkt_flags |= ROCDEC_PKT_ENDOFPICTURE;
 
-    int64_t pts_gst = frame->pts;    // nanoseconds
-    int64_t pts_roc = pts_gst / 100; // rocDecode uses 10MHz (100ns units)
+    int64_t pts_gst = frame->pts;
+    int64_t pts_roc = pts_gst / 100;
 
     int num_decoded = 0;
     try {
         roc_dec->DecodeFrame((uint8_t*)data_ptr, data_size, pkt_flags, pts_roc, &num_decoded);
-        GST_LOG_OBJECT(self, "DecodeFrame returned, num_decoded=%d", num_decoded);
     } catch (const RocVideoDecodeException& e) {
         gst_buffer_unmap(in_buf, &map);
         GST_ERROR_OBJECT(self, "DecodeFrame failed: %s (err=%d)", e.what(), e.Geterror_code());
@@ -539,13 +457,11 @@ static GstFlowReturn gst_magma_h264_dec_handle_frame(GstVideoDecoder* decoder, G
     }
     gst_buffer_unmap(in_buf, &map);
 
-    // Update output resolution from decoder if it changed
     int w = (int)roc_dec->GetWidth();
     int h = (int)roc_dec->GetHeight();
     if (w > 0 && h > 0 && (!self->configured || w != self->width || h != self->height)) {
         self->width = w;
         self->height = h;
-        // Query downstream caps to determine preferred output format
         GstCaps* nv12_query = gst_caps_new_simple("video/x-raw", "format", G_TYPE_STRING, "NV12", "width", G_TYPE_INT, w, "height", G_TYPE_INT, h, NULL);
         GstCaps* downstream = gst_pad_peer_query_caps(decoder->srcpad, nv12_query);
         gboolean use_nv12 = downstream && !gst_caps_is_empty(downstream);
@@ -558,7 +474,6 @@ static GstFlowReturn gst_magma_h264_dec_handle_frame(GstVideoDecoder* decoder, G
         gst_video_codec_state_unref(out);
         gst_video_decoder_negotiate(decoder);
 
-        // Store the actual negotiated format
         GstVideoCodecState* out_state = gst_video_decoder_get_output_state(decoder);
         self->output_format = GST_VIDEO_INFO_FORMAT(&out_state->info);
         gst_video_codec_state_unref(out_state);
@@ -567,11 +482,8 @@ static GstFlowReturn gst_magma_h264_dec_handle_frame(GstVideoDecoder* decoder, G
         self->configured = TRUE;
     }
 
-    // Queue this input frame as pending — it will be matched to a decoder
-    // output (possibly a future one, due to H.264 reordering).
     pending_push(self, frame, pts_roc);
 
-    // Pull all available decoded frames, matching them to pending inputs
     while (true) {
         int64_t out_pts_roc = 0;
         uint8_t* uv_ptr = nullptr;
@@ -583,10 +495,8 @@ static GstFlowReturn gst_magma_h264_dec_handle_frame(GstVideoDecoder* decoder, G
         int64_t out_pts = out_pts_roc * 100;
         GstBuffer* out_buf = create_output_buffer(self, roc_dec, y_ptr, uv_ptr, pitch_y, pitch_uv, out_pts_roc, self->width, self->height, self->output_format);
 
-        // Find matching pending frame by PTS
         GstVideoCodecFrame* target = pending_match(self, out_pts_roc);
         if (!target) {
-            // No PTS match — output belongs to the oldest pending frame
             PendingFrame* pf = pending_front(self);
             if (pf) {
                 target = pf->frame;
@@ -601,20 +511,15 @@ static GstFlowReturn gst_magma_h264_dec_handle_frame(GstVideoDecoder* decoder, G
         }
     }
 
-    // Always return OK — the current frame is queued (it'll be finished
-    // when the decoder outputs its display-order frame later).
     return GST_FLOW_OK;
 }
 
-// ─── drain — flush all remaining decoded frames ─────────────────────
 static GstFlowReturn gst_magma_h264_dec_drain(GstVideoDecoder* decoder) {
     auto* self = GST_MAGMA_H264_DEC(decoder);
     auto* roc_dec = static_cast<RocVideoDecoder*>(self->roc_decoder);
 
-    // Flush the decoder: send null/EOF to output remaining frames
     roc_dec->DecodeFrame(nullptr, 0, 0, 0, 0);
 
-    // Pull all flushed frames
     while (true) {
         int64_t out_pts_roc = 0;
         uint8_t* uv_ptr = nullptr;
@@ -642,7 +547,6 @@ static GstFlowReturn gst_magma_h264_dec_drain(GstVideoDecoder* decoder) {
         }
     }
 
-    // Finish any remaining pending frames with stub buffers
     while (self->pending_count > 0) {
         PendingFrame* pf = pending_front(self);
         GST_WARNING_OBJECT(self, "Drain: finishing unmatched frame PTS=%ld", pf->pts_roc);
@@ -655,14 +559,12 @@ static GstFlowReturn gst_magma_h264_dec_drain(GstVideoDecoder* decoder) {
     return GST_FLOW_OK;
 }
 
-// ─── flush ───────────────────────────────────────────────────────────
 static gboolean gst_magma_h264_dec_flush(GstVideoDecoder* decoder) {
     auto* self = GST_MAGMA_H264_DEC(decoder);
     self->pending_count = 0;
     return TRUE;
 }
 
-// ─── class init ───────────────────────────────────────────────────────
 static void gst_magma_h264_dec_class_init(GstMagmaH264DecClass* klass) {
     auto* decoder_class = GST_VIDEO_DECODER_CLASS(klass);
     auto* element_class = GST_ELEMENT_CLASS(klass);
@@ -680,7 +582,6 @@ static void gst_magma_h264_dec_class_init(GstMagmaH264DecClass* klass) {
     decoder_class->flush = gst_magma_h264_dec_flush;
 }
 
-// ─── instance init ────────────────────────────────────────────────────
 static void gst_magma_h264_dec_init(GstMagmaH264Dec* self) {
     self->roc_decoder = nullptr;
     self->width = 0;

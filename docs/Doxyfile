@@ -4,20 +4,23 @@ DOXYFILE_ENCODING      = UTF-8
 PROJECT_NAME           = "Magma"
 PROJECT_NUMBER         = 1.0.0
 PROJECT_BRIEF          = "GPU-accelerated video analytics framework for AMD ROCm"
-OUTPUT_DIRECTORY       = html
+OUTPUT_DIRECTORY       = _doxygen
 CREATE_SUBDIRS         = NO
 FULL_PATH_NAMES        = NO
 STRIP_FROM_PATH        = ../
 
-INPUT                  = ../gst-plugin/include ../gst-plugin/src ../gst-plugin/kernels
+INPUT                  = ../gst-plugin/include ../gst-plugin/src ../gst-plugin/kernels mainpage.md theory.md
 RECURSIVE              = YES
 
-FILE_PATTERNS          = *.h *.hpp *.cpp *.c
+FILE_PATTERNS          = *.h *.hpp *.cpp *.c *.md
 EXCLUDE_PATTERNS       = */build/* */builddir/* */build-debug/*
+USE_MDFILE_AS_MAINPAGE = mainpage.md
 
-GENERATE_HTML          = YES
+GENERATE_HTML          = NO
 GENERATE_LATEX         = NO
-HTML_OUTPUT            = .
+
+GENERATE_XML           = YES
+XML_OUTPUT             = xml
 HTML_EXTRA_STYLESHEET  =
 HTML_HEADER            =
 HTML_FOOTER            =

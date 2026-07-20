@@ -88,6 +88,19 @@ python3.12 pit.py
 biformervit-detect_tiny.onnx -> biformervit-detect_tiny.mxr
 
 ```
+## Documentation
+
+API documentation is generated from Doxygen comments in the source code
+using **Doxygen** → **Sphinx** (via Breathe).
+
+```sh
+cd docs && doxygen && python3 -m sphinx -b html . _build/html
+```
+
+Then open `docs/_build/html/index.html` in a browser.
+
+From VS Code: press **Ctrl+Shift+P** → **Tasks: Run Task** → **Build docs**.
+
 ### how do i compile the god damn thing:
 I do it like so since im on arch and /usr/local is a mess
 ```sh

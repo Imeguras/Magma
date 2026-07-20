@@ -9,6 +9,7 @@
 #include <gst/video/video.h>
 #include <gst/video/gstvideodecoder.h>
 #include <hip/hip_runtime.h>
+#include <vector>
 
 G_BEGIN_DECLS
 
@@ -49,6 +50,10 @@ struct _GstMagmaH264Dec {
     /* Frame buffer pool: avoids hipMalloc/hipFree per frame */
 #define FRAME_POOL_SIZE 16
     GAsyncQueue* pool_free;
+
+    /* Reusable bitstream conversion buffers to avoid per-frame malloc */
+    std::vector<uint8_t> bitstream_buf;
+    std::vector<uint8_t> avcc_buf;
 };
 
 G_END_DECLS
