@@ -51,11 +51,12 @@ __global__ void decode_filter_kernel(
 
     int level_starts[5];
     int level_widths[4] = {};
+    int level_heights[4] = {};
     level_starts[0] = 0;
     for (int l = 0; l < 4; l++) {
         level_widths[l] = net_w / c_strides[l];
-        int hl = net_h / c_strides[l];
-        level_starts[l+1] = level_starts[l] + level_widths[l] * hl * 3;
+        level_heights[l] = net_h / c_strides[l];
+        level_starts[l+1] = level_starts[l] + level_widths[l] * level_heights[l] * 3;
     }
 
     int level = 0;
@@ -66,8 +67,10 @@ __global__ void decode_filter_kernel(
     int level_start = level_starts[level];
 
     int pos_in_level = i - level_start;
-    int ratio_idx = pos_in_level % 3;
-    int grid_idx = pos_in_level / 3;
+    int h_l = level_heights[level];
+    int num_grid = w_l * h_l;
+    int ratio_idx = pos_in_level / num_grid;
+    int grid_idx = pos_in_level % num_grid;
     int gy = grid_idx / w_l;
     int gx = grid_idx % w_l;
 
@@ -105,7 +108,7 @@ __device__ static float box_iou(float ax1, float ay1, float ax2, float ay2,
     float ix1 = fmaxf(ax1, bx1);
     float iy1 = fmaxf(ay1, by1);
     float ix2 = fminf(ax2, bx2);
-    float iy2 = fminf(by2, by2);
+    float iy2 = fminf(ay2, by2);
     float iw = fmaxf(ix2 - ix1, 0.0f);
     float ih = fmaxf(iy2 - iy1, 0.0f);
     float inter = iw * ih;

@@ -1,4 +1,5 @@
 #include "mgmpreproc.hpp"
+#include "magma-config.hpp"
 #include "kernel_utils.hpp"
 #include "magma-meta.h"
 #include "magma-hip-stream.hpp"
@@ -18,11 +19,14 @@ enum {
     PROP_NET_WIDTH,
     PROP_NET_HEIGHT,
     PROP_SCALE_FACTOR,
+    PROP_MEAN_R, PROP_MEAN_G, PROP_MEAN_B,
+    PROP_STD_R, PROP_STD_G, PROP_STD_B,
     PROP_ENABLE_ROI,
     PROP_ROI_X,
     PROP_ROI_Y,
     PROP_ROI_W,
     PROP_ROI_H,
+    PROP_CONFIG_FILE,
 };
 
 G_DEFINE_TYPE(GstMagmaPreproc, gst_magma_preproc, GST_TYPE_BASE_TRANSFORM)
@@ -115,6 +119,16 @@ static void gst_magma_preproc_set_property(GObject* object, guint prop_id, const
     case PROP_SCALE_FACTOR:
         self->scale_factor = g_value_get_float(value);
         break;
+    case PROP_MEAN_R: self->mean_r = g_value_get_float(value); break;
+    case PROP_MEAN_G: self->mean_g = g_value_get_float(value); break;
+    case PROP_MEAN_B: self->mean_b = g_value_get_float(value); break;
+    case PROP_STD_R:  self->std_r  = g_value_get_float(value); break;
+    case PROP_STD_G:  self->std_g  = g_value_get_float(value); break;
+    case PROP_STD_B:  self->std_b  = g_value_get_float(value); break;
+    case PROP_CONFIG_FILE:
+        g_free(self->config_file);
+        self->config_file = g_value_dup_string(value);
+        break;
     case PROP_ENABLE_ROI:
         self->enable_roi = g_value_get_boolean(value);
         break;
@@ -150,6 +164,15 @@ static void gst_magma_preproc_get_property(GObject* object, guint prop_id, GValu
         break;
     case PROP_SCALE_FACTOR:
         g_value_set_float(value, self->scale_factor);
+        break;
+    case PROP_MEAN_R: g_value_set_float(value, self->mean_r); break;
+    case PROP_MEAN_G: g_value_set_float(value, self->mean_g); break;
+    case PROP_MEAN_B: g_value_set_float(value, self->mean_b); break;
+    case PROP_STD_R:  g_value_set_float(value, self->std_r);  break;
+    case PROP_STD_G:  g_value_set_float(value, self->std_g);  break;
+    case PROP_STD_B:  g_value_set_float(value, self->std_b);  break;
+    case PROP_CONFIG_FILE:
+        g_value_set_string(value, self->config_file);
         break;
     case PROP_ENABLE_ROI:
         g_value_set_boolean(value, self->enable_roi);
@@ -206,6 +229,8 @@ static void gst_magma_preproc_finalize(GObject* object) {
         (void)hipFree(self->d_input_upload);
         self->d_input_upload = 0;
     }
+    g_free(self->config_file);
+    self->config_file = NULL;
     G_OBJECT_CLASS(gst_magma_preproc_parent_class)->finalize(object);
 }
 
@@ -225,6 +250,10 @@ static void gst_magma_preproc_init(GstMagmaPreproc* self) {
     self->net_width = 224;
     self->net_height = 224;
     self->scale_factor = 1.0f / 255.0f;
+
+    self->mean_r = 0.0f; self->mean_g = 0.0f; self->mean_b = 0.0f;
+    self->std_r = 1.0f; self->std_g = 1.0f; self->std_b = 1.0f;
+    self->config_file = NULL;
 
     self->enable_roi = FALSE;
     self->roi_x = 0;
@@ -249,6 +278,18 @@ static void gst_magma_preproc_init(GstMagmaPreproc* self) {
     self->tensor_alloc_size = 0;
 
     gst_base_transform_set_in_place(GST_BASE_TRANSFORM(self), TRUE);
+}
+
+/** --- START (READY → PAUSED) — load config file if provided --- */
+static gboolean gst_magma_preproc_start(GstBaseTransform* trans)
+{
+    GstMagmaPreproc* self = GST_MAGMA_PREPROC(trans);
+    if (self->config_file && self->config_file[0]) {
+        magma::Config cfg;
+        if (cfg.load(self->config_file))
+            cfg.apply(GST_ELEMENT(self), "mgmpreproc");
+    }
+    return TRUE;
 }
 
 /**
@@ -449,10 +490,12 @@ static GstFlowReturn gst_magma_preproc_transform_ip(GstBaseTransform* trans, Gst
         float* t_ptr = self->d_tensor_output;
         int nw = self->net_width, nh = self->net_height;
         float sf = self->scale_factor;
+        float mr = self->mean_r, mg = self->mean_g, mb = self->mean_b;
+        float sr = self->std_r,  sg = self->std_g,  sb = self->std_b;
         int grid_x = (nw + block_size - 1) / block_size;
         int grid_y = (nh + block_size - 1) / block_size;
 
-        void* args[] = {&d_ptr, &w, &h, &stride, &t_ptr, &nw, &nh, &cx, &cy, &cw, &ch, &sf};
+        void* args[] = {&d_ptr, &w, &h, &stride, &t_ptr, &nw, &nh, &cx, &cy, &cw, &ch, &sf, &mr, &mg, &mb, &sr, &sg, &sb};
         hipError_t err = hipModuleLaunchKernel(self->kernel_nv12_to_rgb, grid_x, grid_y, 1, block_size, block_size, 1, 0, self->hip_stream, args, nullptr);
         if (err != hipSuccess) {
             GST_ERROR_OBJECT(self, "hipModuleLaunchKernel(nv12_to_rgb) failed: %s", hipGetErrorString(err));
@@ -503,7 +546,15 @@ static void gst_magma_preproc_class_init(GstMagmaPreprocClass* klass) {
     g_object_class_install_property(
         object_class, PROP_NET_HEIGHT, g_param_spec_int("net-height", "Network Input Height", "Height of the input tensor expected by the neural network", 1, G_MAXINT, 224, G_PARAM_READWRITE));
     g_object_class_install_property(
-        object_class, PROP_SCALE_FACTOR, g_param_spec_float("scale-factor", "Scale Factor", "Factor by which to scale the input tensor", 0.0, G_MAXFLOAT, 1.0f, G_PARAM_READWRITE));
+        object_class, PROP_SCALE_FACTOR, g_param_spec_float("scale-factor", "Scale Factor", "Factor by which to scale the input tensor (before mean/std)", 0.0, G_MAXFLOAT, 1.0f, G_PARAM_READWRITE));
+    g_object_class_install_property(object_class, PROP_MEAN_R, g_param_spec_float("mean-r", "Mean R", "Per-channel mean subtracted after scale (R channel)", -G_MAXFLOAT, G_MAXFLOAT, 0.0f, G_PARAM_READWRITE));
+    g_object_class_install_property(object_class, PROP_MEAN_G, g_param_spec_float("mean-g", "Mean G", "Per-channel mean (G channel)", -G_MAXFLOAT, G_MAXFLOAT, 0.0f, G_PARAM_READWRITE));
+    g_object_class_install_property(object_class, PROP_MEAN_B, g_param_spec_float("mean-b", "Mean B", "Per-channel mean (B channel)", -G_MAXFLOAT, G_MAXFLOAT, 0.0f, G_PARAM_READWRITE));
+    g_object_class_install_property(object_class, PROP_STD_R, g_param_spec_float("std-r", "Std R", "Per-channel std deviation (R channel)", 0.0001f, G_MAXFLOAT, 1.0f, G_PARAM_READWRITE));
+    g_object_class_install_property(object_class, PROP_STD_G, g_param_spec_float("std-g", "Std G", "Per-channel std deviation (G channel)", 0.0001f, G_MAXFLOAT, 1.0f, G_PARAM_READWRITE));
+    g_object_class_install_property(object_class, PROP_STD_B, g_param_spec_float("std-b", "Std B", "Per-channel std deviation (B channel)", 0.0001f, G_MAXFLOAT, 1.0f, G_PARAM_READWRITE));
+    g_object_class_install_property(
+        object_class, PROP_CONFIG_FILE, g_param_spec_string("config-file", "Config file", "Path to TOML config file for property overrides", NULL, G_PARAM_READWRITE));
     g_object_class_install_property(object_class, PROP_ENABLE_ROI, g_param_spec_boolean("enable-roi", "Enable ROI", "Crop to region of interest before resize", FALSE, G_PARAM_READWRITE));
     g_object_class_install_property(object_class, PROP_ROI_X, g_param_spec_int("roi-x", "ROI X", "Left coordinate of the crop rectangle in the source frame", 0, G_MAXINT, 0, G_PARAM_READWRITE));
     g_object_class_install_property(object_class, PROP_ROI_Y, g_param_spec_int("roi-y", "ROI Y", "Top coordinate of the crop rectangle in the source frame", 0, G_MAXINT, 0, G_PARAM_READWRITE));
@@ -518,6 +569,7 @@ static void gst_magma_preproc_class_init(GstMagmaPreprocClass* klass) {
     trans_class->transform_caps = gst_magma_preproc_transform_caps;
     trans_class->set_caps = gst_magma_preproc_set_caps;
     trans_class->transform_ip = gst_magma_preproc_transform_ip;
+    trans_class->start = gst_magma_preproc_start;
 
     gst_element_class_set_static_metadata(element_class, "Magma Preprocessor", "Filter/Video", "ROCm/HIP tensor preprocessing (NV12 → float32 CHW)", "Magma");
 }

@@ -1,4 +1,5 @@
 #include "mgminfer.hpp"
+#include "magma-config.hpp"
 #include "magma-meta.h"
 #include "kernel_utils.hpp"
 #include "magma-hip-stream.hpp"
@@ -34,6 +35,7 @@ enum {
     PROP_NMS_THRESH,
     PROP_MAX_DETECTIONS,
     PROP_CLASS_FILTER,
+    PROP_CONFIG_FILE,
 };
 
 G_DEFINE_TYPE(GstMagmaInfer, gst_magma_infer, GST_TYPE_BASE_TRANSFORM)
@@ -46,18 +48,17 @@ struct MigraphXModel {
     migraphx::shape input_shape;
     std::vector<std::size_t> input_lengths;
     std::vector<std::pair<std::string, migraphx::shape>> all_params;
-    hipDeviceptr_t d_output_scratch;
-    std::size_t output_scratch_bytes;
+    std::vector<hipDeviceptr_t> d_output_scratch;
     int model_width;
     int model_height;
 
-    MigraphXModel() : d_output_scratch(nullptr), output_scratch_bytes(0), model_width(0), model_height(0) {
+    MigraphXModel() : model_width(0), model_height(0) {
     }
 
     ~MigraphXModel() {
-        if (d_output_scratch) {
-            (void)hipFree(d_output_scratch);
-            d_output_scratch = nullptr;
+        for (auto p : d_output_scratch) {
+            if (p)
+                (void)hipFree(p);
         }
     }
 };
@@ -146,6 +147,10 @@ static void gst_magma_infer_set_property(GObject* object, guint prop_id, const G
     case PROP_CLASS_FILTER:
         self->class_filter = g_value_get_int(value);
         break;
+    case PROP_CONFIG_FILE:
+        g_free(self->config_file);
+        self->config_file = g_value_dup_string(value);
+        break;
     default:
         G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
         break;
@@ -182,6 +187,9 @@ static void gst_magma_infer_get_property(GObject* object, guint prop_id, GValue*
         break;
     case PROP_CLASS_FILTER:
         g_value_set_int(value, self->class_filter);
+        break;
+    case PROP_CONFIG_FILE:
+        g_value_set_string(value, self->config_file);
         break;
     default:
         G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
@@ -239,6 +247,8 @@ static void gst_magma_infer_finalize(GObject* object) {
     self->parser_plugin_path = NULL;
     g_free(self->parser_func_name);
     self->parser_func_name = NULL;
+    g_free(self->config_file);
+    self->config_file = NULL;
 
     G_OBJECT_CLASS(gst_magma_infer_parent_class)->finalize(object);
 }
@@ -257,6 +267,13 @@ static gboolean gst_magma_infer_start(GstBaseTransform* trans) {
                      self->mxr_model_path ? self->mxr_model_path : "(null)",
                      self->onnx_model_path ? self->onnx_model_path : "(null)",
                      self->parser_plugin_path ? self->parser_plugin_path : "(null)");
+
+    /* Load config file if provided — overrides any props set before start */
+    if (self->config_file && self->config_file[0]) {
+        magma::Config cfg;
+        if (cfg.load(self->config_file))
+            cfg.apply(GST_ELEMENT(self), "mgminfer");
+    }
 
     if (!self->mxr_model_path && !self->onnx_model_path) {
         GST_ERROR_OBJECT(self, "Neither mxr-model-path nor onnx-model-path was provided. At least one is required.");
@@ -354,8 +371,6 @@ static gboolean gst_magma_infer_start(GstBaseTransform* trans) {
 
     model->input_name.clear();
     model->all_params.clear();
-    model->d_output_scratch = nullptr;
-    model->output_scratch_bytes = 0;
 
     for (auto& n : names) {
         auto s = param_shapes[n];
@@ -382,21 +397,17 @@ static gboolean gst_magma_infer_start(GstBaseTransform* trans) {
         return FALSE;
     }
 
-    /* pre-allocate GPU scratch for output params */
-    std::size_t max_scratch = 0;
+    /* pre-allocate GPU scratch for each output param separately */
     for (auto& [n, s] : model->all_params) {
-        if (n != model->input_name) {
-            max_scratch = std::max(max_scratch, s.bytes());
-        }
-    }
-    if (max_scratch > 0) {
-        hipError_t err = hipMalloc(&model->d_output_scratch, max_scratch);
+        if (n == model->input_name) continue;
+        hipDeviceptr_t buf = nullptr;
+        hipError_t err = hipMalloc(&buf, s.bytes());
         if (err != hipSuccess) {
-            GST_ERROR_OBJECT(self, "hipMalloc(output_scratch %zu) failed: %s", max_scratch, hipGetErrorString(err));
+            GST_ERROR_OBJECT(self, "hipMalloc(%s %zu) failed: %s", n.c_str(), s.bytes(), hipGetErrorString(err));
             return FALSE;
         }
-        model->output_scratch_bytes = max_scratch;
-        GST_INFO_OBJECT(self, "allocated %zu bytes GPU scratch for output params", max_scratch);
+        model->d_output_scratch.push_back(buf);
+        GST_INFO_OBJECT(self, "allocated %zu bytes GPU for output param '%s'", s.bytes(), n.c_str());
     }
 
     self->migraphx_model = model.release();
@@ -463,6 +474,7 @@ static void gst_magma_infer_init(GstMagmaInfer* self) {
     self->parser_func_name = g_strdup("magma_parse");
     self->parser_handle = nullptr;
     self->parser_func = nullptr;
+    self->config_file = NULL;
 
     self->confidence_thresh = 0.5f;
     self->nms_thresh = 0.45f;
@@ -569,11 +581,12 @@ static GstFlowReturn attach_inference_meta(GstMagmaInfer* self, GstBuffer* buf, 
         m->model_height = tmeta->height;
     }
 
-    m->num_objects = num_objects;
+    /* GPU atomic counter may over-report — clamp to allocated size */
+    gint n = num_objects > 0 ? std::min(num_objects, (gint)self->max_objects) : 0;
+    m->num_objects = n;
 
-    /* copy parsed objects from GPU to a host-accessible GstMemory */
-    if (num_objects > 0) {
-        gsize bytes = (gsize)num_objects * sizeof(MagmaInferObjectGPU);
+    if (n > 0) {
+        gsize bytes = (gsize)n * sizeof(MagmaInferObjectGPU);
         MagmaInferObjectGPU* host = (MagmaInferObjectGPU*)g_malloc(bytes);
         hipError_t herr = hipMemcpyDtoH(host, self->d_objects, bytes);
         if (herr != hipSuccess) {
@@ -585,16 +598,16 @@ static GstFlowReturn attach_inference_meta(GstMagmaInfer* self, GstBuffer* buf, 
         /* apply class filter */
         if (self->class_filter >= 0) {
             gint wr = 0;
-            for (gint rd = 0; rd < num_objects; rd++) {
+            for (gint rd = 0; rd < n; rd++) {
                 if ((gint)host[rd].class_id == self->class_filter)
                     host[wr++] = host[rd];
             }
-            num_objects = wr;
+            n = wr;
         }
 
-        gsize filtered_bytes = num_objects > 0 ? (gsize)num_objects * sizeof(MagmaInferObjectGPU) : 0;
-        m->num_objects = num_objects;
-        if (num_objects > 0) {
+        gsize filtered_bytes = n > 0 ? (gsize)n * sizeof(MagmaInferObjectGPU) : 0;
+        m->num_objects = n;
+        if (n > 0) {
             m->objects_gpu = gst_memory_new_wrapped(GST_MEMORY_FLAG_READONLY, host, filtered_bytes, 0, filtered_bytes, host, g_free);
         } else {
             g_free(host);
@@ -645,8 +658,14 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
     if (self->model_loaded) {
         auto* model = static_cast<MigraphXModel*>(self->migraphx_model);
 
-        if (model->input_lengths.size() == 4 && (int)model->input_lengths[0] == 1 && (int)model->input_lengths[1] == tmeta->channels && (int)model->input_lengths[2] == tmeta->height &&
-            (int)model->input_lengths[3] == tmeta->width) {
+        /* MIGraphX may compile dynamic ONNX dims as 1 (placeholders).
+           Only check batch=1 and channels match; let MIGraphX reshape
+           the dynamic spatial dims at runtime. */
+        bool shape_ok = (model->input_lengths.size() == 3 && (int)model->input_lengths[0] == tmeta->channels &&
+                         (int)model->input_lengths[1] == tmeta->height && (int)model->input_lengths[2] == tmeta->width) ||
+                        (model->input_lengths.size() == 4 && (int)model->input_lengths[0] == 1 && (int)model->input_lengths[1] == tmeta->channels &&
+                         (int)model->input_lengths[2] <= tmeta->height && (int)model->input_lengths[3] <= tmeta->width);
+        if (shape_ok) {
 
             /* import tensor DMABuf → HIP (cached — tensor fd is stable across frames) */
             if (tmeta->tensor_mem != self->cached_tensor_mem) {
@@ -678,12 +697,15 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
             /* build argument map — pass all params */
             try {
                 migraphx::program_parameters eval_args;
-                for (auto& [n, s] : model->all_params) {
-                    migraphx::shape arg_shape(s.type(), s.lengths());
-                    if (n == model->input_name) {
-                        eval_args.add(n.c_str(), migraphx::argument(arg_shape, (void*)d_tensor));
-                    } else {
-                        eval_args.add(n.c_str(), migraphx::argument(arg_shape, (void*)model->d_output_scratch));
+                {
+                    std::size_t scratch_idx = 0;
+                    for (auto& [n, s] : model->all_params) {
+                        migraphx::shape arg_shape(s.type(), s.lengths());
+                        if (n == model->input_name) {
+                            eval_args.add(n.c_str(), migraphx::argument(arg_shape, (void*)d_tensor));
+                        } else {
+                            eval_args.add(n.c_str(), migraphx::argument(arg_shape, (void*)model->d_output_scratch[scratch_idx++]));
+                        }
                     }
                 }
 
@@ -695,39 +717,34 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
                     return GST_FLOW_ERROR;
                 }
 
-                auto output_arg = outputs.front();
-                auto output_shape = output_arg.get_shape();
-                auto* d_output = static_cast<const char*>(output_arg.data());
-                GST_LOG_OBJECT(self, "output ptr=%p", (void*)d_output);
-
-                /* ensure MIGraphX eval is fully done before parser touches the output */
-                //(void)hipStreamSynchronize(self->hip_stream);
-
-                /* copy output to a fresh parser-owned buffer (MIGraphX internally managed) */
-                // gsize output_bytes = output_shape.bytes();
-
-                /* pe = hipMemcpyDtoD(self->d_parser_input, (hipDeviceptr_t)d_output, output_bytes);
-                 if (pe != hipSuccess) {
-                    GST_ERROR_OBJECT(self, "hipMemcpyDtoD(parser_input) failed");
-                    (void)hipFree(self->d_parser_input);
-                    return GST_FLOW_ERROR;
+                /* --- build multi-output arrays for the parser --- */
+                int n_out = (int)outputs.size();
+                std::vector<const void*> raw_ptrs(n_out);
+                std::vector<const int64_t*> shape_ptrs(n_out);
+                std::vector<int> ndims(n_out);
+                std::vector<std::vector<int64_t>> shape_storage(n_out);
+                for (int i = 0; i < n_out; i++) {
+                    auto s = outputs[i].get_shape();
+                    auto lens = s.lengths();
+                    shape_storage[i].assign(lens.begin(), lens.end());
+                    raw_ptrs[i] = outputs[i].data();
+                    shape_ptrs[i] = shape_storage[i].data();
+                    ndims[i] = (int)lens.size();
                 }
-                // Sync all GPU operations before parser touches the data
-                //(void)hipStreamSynchronize(self->hip_stream);
-                */
+
+                auto* d_first_output = static_cast<const char*>(outputs.front().data());
+                auto first_output_shape = outputs.front().get_shape();
+                GST_LOG_OBJECT(self, "first output ptr=%p (%d outputs total)", (void*)d_first_output, n_out);
+                for (int oi = 0; oi < n_out; oi++) {
+                    auto os = outputs[oi].get_shape();
+                    auto ol = os.lengths();
+                    std::string dims;
+                    for (auto d : ol) dims += std::to_string(d) + " ";
+                    GST_INFO_OBJECT(self, "  output[%d]: type=%zu shape=[%s] bytes=%zu", oi, (std::size_t)os.type(), dims.c_str(), os.bytes());
+                }
+
                 /* --- parser dispatch --- */
                 if (self->parser_func) {
-                    auto lengths = output_shape.lengths();
-                    int ndim = (int)lengths.size();
-                    std::vector<int64_t> host_lengths(lengths.begin(), lengths.end());
-
-                    {
-                        std::string dims;
-                        for (auto l : lengths)
-                            dims += std::to_string(l) + " ";
-                        GST_INFO_OBJECT(self, "MIGraphX output shape: %s(%d dims, %zu bytes)", dims.c_str(), ndim, output_shape.bytes());
-                    }
-
                     int net_w = self->in_width;
                     int net_h = self->in_height;
                     {
@@ -740,10 +757,13 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
 
                     MagmaParseParams params{};
 
-                    // params.d_raw_output = (const void*)d_parser_input;
-                    params.d_raw_output = (const void*)d_output;
-                    params.output_shape = host_lengths.data();
-                    params.num_dims = ndim;
+                    params.d_raw_output = (const void*)d_first_output;
+                    params.output_shape = shape_ptrs[0];
+                    params.num_dims = ndims[0];
+                    params.num_raw_outputs = n_out;
+                    params.d_raw_outputs = raw_ptrs.data();
+                    params.output_shapes = shape_ptrs.data();
+                    params.num_dims_list = ndims.data();
                     params.net_width = net_w;
                     params.net_height = net_h;
                     params.confidence_thresh = self->confidence_thresh;
@@ -753,13 +773,9 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
                     params.d_num_detected = self->d_num_det;
                     params.stream = (void*)self->hip_stream;
 
-                    // Test: just do a memset to verify GPU access before parser
-                    GST_INFO_OBJECT(
-                        self, "pre-parser: memset d_objects=%p size=%zu stream=%p", (void*)self->d_objects, (size_t)(self->max_objects * sizeof(MagmaInferObjectGPU)), (void*)self->hip_stream);
-                    GST_INFO_OBJECT(self, "pre-parser: calling parser_func at %p", (void*)self->parser_func);
+                    GST_INFO_OBJECT(self, "pre-parser: calling parser_func at %p (%d outputs)", (void*)self->parser_func, n_out);
 
                     int pret = self->parser_func(&params);
-                    //(void)hipFree(d_parser_input);
 
                     if (pret != 0) {
                         GST_ERROR_OBJECT(self, "parser failed with code %d", pret);
@@ -775,10 +791,10 @@ static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBu
                     return attach_inference_meta(self, buf, num_detected);
                 } else {
                     /* --- fallback: legacy hardcoded path (no parser) --- */
-                    gsize output_bytes = output_shape.bytes();
+                    gsize output_bytes = first_output_shape.bytes();
                     gsize copy_bytes = std::min(output_bytes, self->max_objects * sizeof(MagmaInferObjectGPU));
 
-                    hipError_t herr = hipMemcpyDtoD(self->d_objects, (hipDeviceptr_t)d_output, copy_bytes);
+                    hipError_t herr = hipMemcpyDtoD(self->d_objects, (hipDeviceptr_t)d_first_output, copy_bytes);
                     if (herr != hipSuccess) {
                         GST_ERROR_OBJECT(self, "hipMemcpyDtoD failed: %s", hipGetErrorString(herr));
 
@@ -847,6 +863,9 @@ static void gst_magma_infer_class_init(GstMagmaInferClass* klass) {
 
     g_object_class_install_property(
         gobject_class, PROP_CLASS_FILTER, g_param_spec_int("class-filter", "Class filter", "Only keep detections of this class (-1 = all)", -1, 1000, -1, G_PARAM_READWRITE));
+
+    g_object_class_install_property(
+        gobject_class, PROP_CONFIG_FILE, g_param_spec_string("config-file", "Config file", "Path to TOML config file for property overrides", NULL, G_PARAM_READWRITE));
 
     gst_element_class_add_static_pad_template(element_class, &sink_template);
     gst_element_class_add_static_pad_template(element_class, &src_template);

@@ -22,6 +22,13 @@ migraphx_dep = declare_dependency(
 
 inc = include_directories('include')
 
+# toml++ — system package (tomlplusplus)
+tomlpp_dep = dependency('tomlplusplus', required: true)
+tomlpp_inc = []
+
+# Shared magma-config source (TOML config loader for plugins)
+magma_config_src = ['src/magma-config.cpp']
+
 kernel_src_dir = meson.current_source_dir() / 'kernels'
 
 # Shared meta library — single compilation of meta types to avoid double-registration
@@ -62,6 +69,7 @@ kernel_utils_dep = declare_dependency(
 # Plugin: mgminfer
 mgminfer_sources = [
   'src/mgminfer.cpp',
+  magma_config_src,
 ]
 
 mgminfer_shlib = shared_library('mgminfer',
@@ -71,10 +79,10 @@ mgminfer_shlib = shared_library('mgminfer',
     '-std=c++17',
     '-DMAGMA_KERNEL_SRC_DIR="' + kernel_src_dir + '"',
   ],
-  include_directories: [inc, hip_inc],
+  include_directories: [inc, hip_inc, tomlpp_inc],
   dependencies: [gst_dep, gstbase_dep, gstvideo_dep, gstallocators_dep,
                  kernel_utils_dep, gbm_dep, drm_dep, hip_host_dep,
-                 migraphx_dep, magma_meta_dep, roctx_dep],
+                 migraphx_dep, magma_meta_dep, roctx_dep, tomlpp_dep],
   install: true,
   install_dir: plugins_install_dir,
 )
@@ -82,6 +90,7 @@ mgminfer_shlib = shared_library('mgminfer',
 # Plugin: mgmpreproc
 mgmpreproc_sources = [
   'src/mgmpreproc.cpp',
+  magma_config_src,
 ]
 
 mgmpreproc_shlib = shared_library('mgmpreproc',
@@ -91,9 +100,9 @@ mgmpreproc_shlib = shared_library('mgmpreproc',
     '-std=c++17',
     '-DMAGMA_KERNEL_SRC_DIR="' + kernel_src_dir + '"',
   ],
-  include_directories: [inc, hip_inc],
+  include_directories: [inc, hip_inc, tomlpp_inc],
   dependencies: [gst_dep, gstbase_dep, gstvideo_dep, gstallocators_dep,
-                 kernel_utils_dep, gbm_dep, drm_dep, magma_meta_dep],
+                 kernel_utils_dep, gbm_dep, drm_dep, magma_meta_dep, tomlpp_dep],
   install: true,
   install_dir: plugins_install_dir,
 )
@@ -118,7 +127,8 @@ mgmh264dec_shlib = shared_library('mgmh264dec',
   cpp_args: ['-std=c++17'],
   include_directories: [inc, hip_inc, rocdecode_inc],
   dependencies: [gst_dep, gstvideo_dep, gstallocators_dep,
-                 hip_host_dep, hiprtc_dep, rocdecode_dep, magma_meta_dep, roctx_dep],
+                 hip_host_dep, hiprtc_dep, rocdecode_dep, magma_meta_dep, roctx_dep,
+                 kernel_utils_dep],
   install: true,
   install_dir: plugins_install_dir,
 )

@@ -33,14 +33,23 @@ typedef struct {
  * any data it needs to retain.
  */
 typedef struct {
-    /** Raw MIGraphX model output (GPU pointer, valid only during the call) */
-    const void*    d_raw_output;
+    /** ── Legacy single-output fields ────────────────────────────────
+     *  If num_raw_outputs == 0 these are the only outputs available.
+     *  If num_raw_outputs  > 0 they mirror output index 0 and the
+     *  multi-output arrays below should be preferred.
+     */
+    const void*    d_raw_output;       /**< raw GPU pointer (first output) */
+    const int64_t* output_shape;        /**< shape (first output) */
+    int            num_dims;            /**< num dims (first output) */
 
-    /** Shape of the raw output tensor */
-    const int64_t* output_shape;
-
-    /** Number of dimensions in output_shape */
-    int            num_dims;
+    /** ── Multi-output support ───────────────────────────────────────
+     *  num_raw_outputs == 0 → legacy mode (arrays below may be NULL).
+     *  num_raw_outputs  > 0 → use the arrays below for all outputs.
+     */
+    int            num_raw_outputs;     /**< number of model outputs */
+    const void**   d_raw_outputs;       /**< array of GPU ptrs, size num_raw_outputs */
+    const int64_t** output_shapes;      /**< array of shape ptrs, size num_raw_outputs */
+    const int*     num_dims_list;       /**< array of ndims,  size num_raw_outputs */
 
     /** Model input width (for box denormalization) */
     int            net_width;

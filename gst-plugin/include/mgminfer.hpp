@@ -66,6 +66,7 @@ struct _GstMagmaInfer {
     void* parser_handle;
     MagmaParseFunc parser_func;
 
+    gchar* config_file;
     float confidence_thresh;
     float nms_thresh;
     guint max_detections;

@@ -17,10 +17,16 @@ typedef struct {
 /* ---------- parser params (mgminfer → parser) ---------- */
 
 typedef struct {
-    /* raw MIGraphX output (GPU pointer, valid only during the call) */
+    /* legacy single-output fields (mirror output[0] when num_raw_outputs > 0) */
     const void*    d_raw_output;
     const int64_t* output_shape;
     int            num_dims;
+
+    /* multi-output support: num_raw_outputs == 0 → legacy mode */
+    int            num_raw_outputs;
+    const void**   d_raw_outputs;       /* array of GPU ptrs, size num_raw_outputs */
+    const int64_t** output_shapes;      /* array of shape ptrs, size num_raw_outputs */
+    const int*     num_dims_list;       /* array of ndims,  size num_raw_outputs */
 
     /* model input dimensions (for box denormalization) */
     int            net_width;

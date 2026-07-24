@@ -88,6 +88,68 @@ python3.12 pit.py
 biformervit-detect_tiny.onnx -> biformervit-detect_tiny.mxr
 
 ```
+
+### InternImage Detection (High Precision)
+
+InternImage is a CNN-based foundation model using Deformable Convolution v3 (DCNv3). For detection, the official repo pairs it with Mask R-CNN (47.2–50.3 mAP for T/B) or Cascade R-CNN (54.9–56.1 mAP for L/XL). Below is the export workflow for an InternImage-T detection model.
+
+**Model architecture choices (precision vs speed):**
+
+| Backbone | Params | Detection Head   | COCO box mAP (3x) | Notes |
+|----------|--------|------------------|-------------------|-------|
+| Tiny     | 49M    | Mask R-CNN       | 49.1              | Fast, good for real-time |
+| Small    | 69M    | Mask R-CNN       | 49.7              | Balanced |
+| Base     | 115M   | Mask R-CNN       | 50.3              | Better accuracy |
+| Large    | 277M   | Cascade R-CNN    | 56.1              | Best precision, heavy |
+| XL       | 335M+  | Cascade R-CNN    | 56.7+             | SOTA, very heavy |
+
+**Export detection model to ONNX:**
+
+The scaffold at `scaffolds/internimage-detection_tiny.py` adds a simple query-based detection head on InternImage-T (output: `[1, 100, 84]` → 100 queries × (4 bbox + 80 class scores)).
+
+```sh
+# clone the repo
+git clone https://github.com/OpenGVLab/InternImage.git /tmp/InternImage
+cp ./gst-plugin/tests/onnx-gen/scaffolds/internimage-detection_tiny.py /tmp/export.py
+
+cd /tmp/InternImage
+
+# python venv + deps (ROCm or CUDA)
+python3 -m venv intern-env
+source intern-env/bin/activate
+pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.0
+pip install timm onnx
+
+# compile DCNv3 CUDA ops
+cd ops_dcnv3
+python setup.py install
+cd ..
+
+# run the export
+mv /tmp/export.py .
+python export.py
+# → internimage-detection_tiny.onnx
+
+# back to magma
+mv internimage-detection_tiny.onnx /path/to/magma/gst-plugin/tests/onnx-gen/onnx-models/
+deactivate
+```
+
+Then compile to MXR and run:
+
+```sh
+migraphx-driver compile --onnx ./gst-plugin/tests/onnx-gen/onnx-models/internimage-detection_tiny.onnx \
+  --binary --output ./gst-plugin/tests/onnx-gen/migraph/internimage-detection_tiny.mxr
+
+gst-launch-1.0 filesrc location=./gst-plugin/tests/test_data/pessoa.png ! pngdec ! videoconvert \
+  ! mgmvideoconvert \
+  ! mgmpreproc net-width=640 net-height=640 \
+  ! mgminfer model-onnx-file=./gst-plugin/tests/onnx-gen/onnx-models/internimage-detection_tiny.onnx \
+            model-mxr-file=./gst-plugin/tests/onnx-gen/migraph/internimage-detection_tiny.mxr \
+            parser-plugin=/usr/lib/magma/addons/libmagmainternimage-parser.so \
+            confidence-threshold=0.6 nms-threshold=0.01 max-detections=1000 \
+  ! mgmserialize ! fakesink dump=true
+```
 ## Documentation
 
 API documentation is generated from Doxygen comments in the source code

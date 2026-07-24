@@ -12,9 +12,14 @@ ADDONS="/usr/lib/magma/addons"
 RESULTS="$ROOT/benchmarks/results.txt"
 
 VIDEO="${1:-$TEST_DATA/ny-walking.mp4}"
-FRAMES="${2:-300}"
 
 if [ ! -f "$VIDEO" ]; then echo "ERROR: $VIDEO not found"; exit 1; fi
+
+TOTAL_FRAMES=$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=nokey=1:noprint_wrappers=1 "$VIDEO" 2>/dev/null)
+if [ -z "$TOTAL_FRAMES" ] || [ "$TOTAL_FRAMES" -le 0 ]; then
+    echo "ERROR: could not determine frame count for $VIDEO"; exit 1;
+fi
+
 mkdir -p "$(dirname "$RESULTS")"
 
 run() {
@@ -25,11 +30,11 @@ run() {
     printf "  %-55s" "$label" >&2
 
     start=$(date +%s%N)
-    timeout 10 gst-launch-1.0 -e "$@" ! fakesink num-buffers="$FRAMES" sync=false >/dev/null 2>&1 || true
+    timeout 120 gst-launch-1.0 -e "$@" ! fakesink num-buffers="$TOTAL_FRAMES" sync=false >/dev/null 2>&1 || true
     end=$(date +%s%N)
 
     elapsed=$(echo "scale=3; ($end - $start) / 1000000000" | bc)
-    fps=$(echo "scale=1; $FRAMES / $elapsed" | bc)
+    fps=$(echo "scale=1; $TOTAL_FRAMES / $elapsed" | bc)
 
     printf "%6.1f fps  (%5.2fs)\n" "$fps" "$elapsed"
     printf "  %-55s %6.1f fps  (%5.2fs)\n" "$label" "$fps" "$elapsed" >> "$RESULTS"
@@ -41,7 +46,7 @@ printf "%s\n" "==========================================" | tee -a "$RESULTS"
 printf "  Magma Benchmark  —  %s\n" "$(date)" | tee -a "$RESULTS"
 printf "  Commit: %s\n" "$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)" | tee -a "$RESULTS"
 printf "  Video: %s\n" "$VIDEO" | tee -a "$RESULTS"
-printf "  Frames per test: %s\n" "$FRAMES" | tee -a "$RESULTS"
+printf "  Frames: %s (full video)\n" "$TOTAL_FRAMES" | tee -a "$RESULTS"
 printf "==========================================\n" | tee -a "$RESULTS"
 
 DEC="filesrc location=$VIDEO ! qtdemux ! h264parse ! mgmh264dec"

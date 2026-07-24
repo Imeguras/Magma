@@ -22,7 +22,7 @@
  */
 extern "C" {
 __global__ void
-nv12_to_rgb_normalized(unsigned char* frame, int width, int height, int stride, float* tensor, int net_w, int net_h, int crop_x, int crop_y, int crop_w, int crop_h, float scale_factor) {
+nv12_to_rgb_normalized(unsigned char* frame, int width, int height, int stride, float* tensor, int net_w, int net_h, int crop_x, int crop_y, int crop_w, int crop_h, float scale_factor, float mean_r, float mean_g, float mean_b, float std_r, float std_g, float std_b) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
@@ -56,9 +56,9 @@ nv12_to_rgb_normalized(unsigned char* frame, int width, int height, int stride, 
         float g = Y - 0.344136f * (U - 128) - 0.714136f * (V - 128);
         float b = Y + 1.772f * (U - 128);
 
-        r = clampf(r * scale_factor, 0.0f, 1.0f);
-        g = clampf(g * scale_factor, 0.0f, 1.0f);
-        b = clampf(b * scale_factor, 0.0f, 1.0f);
+        r = (r * scale_factor - mean_r) / std_r;
+        g = (g * scale_factor - mean_g) / std_g;
+        b = (b * scale_factor - mean_b) / std_b;
 
         r_plane[point_tensor] = r;
         g_plane[point_tensor] = g;

@@ -3,6 +3,7 @@
 
 #include <cstring>
 #include <string>
+#include <vector>
 
 GST_DEBUG_CATEGORY_STATIC(magma_serialize_debug);
 #define GST_CAT_DEFAULT magma_serialize_debug
@@ -16,67 +17,203 @@ static GstStaticPadTemplate sink_template = GST_STATIC_PAD_TEMPLATE("sink", GST_
 
 static GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE("src", GST_PAD_SRC, GST_PAD_ALWAYS, GST_STATIC_CAPS("application/x-magma-msg"));
 
-/* ---------- JSON serialization ---------- */
-static void append_float(GString* s, const char* fmt, double val) {
+/* ──────────────────────────────────────────────
+ *  Modular serializer interface
+ * ────────────────────────────────────────────── */
+
+typedef void  (*SerializeFunc)(MagmaInferenceMeta* meta, GString* out);
+
+typedef struct {
+    const char*  key;        /* JSON key, e.g. "detections" */
+    gboolean    (*probe)(MagmaInferenceMeta* meta);   /* check if data exists */
+    SerializeFunc to_json;                             /* append JSON fragment */
+} SerializerEntry;
+
+/* ---------- helpers ---------- */
+
+static void append_float(GString* s, double val) {
     char buf[64];
     g_ascii_dtostr(buf, sizeof(buf), val);
     g_string_append(s, buf);
 }
 
+static gboolean map_gpu_memory(GstMemory* mem, gsize bytes, void* dst) {
+    GstMapInfo info;
+    if (gst_memory_map(mem, &info, GST_MAP_READ)) {
+        memcpy(dst, info.data, bytes);
+        gst_memory_unmap(mem, &info);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+#define GPU_MAP(mem, vec) map_gpu_memory((mem), (vec).size() * sizeof((vec)[0]), (vec).data())
+
+/* ──────────────────────────────────────────────
+ *  Detections serializer
+ * ────────────────────────────────────────────── */
+
+static gboolean probe_detections(MagmaInferenceMeta* m) {
+    return m && m->num_objects > 0 && m->objects_gpu;
+}
+
+static void serialize_detections_json(MagmaInferenceMeta* m, GString* s) {
+    gsize n = (gsize)m->num_objects;
+    std::vector<MagmaInferObjectGPU> host(n);
+    if (!GPU_MAP(m->objects_gpu, host)) {
+        g_string_append(s, "\"detections\":[]");
+        return;
+    }
+    g_string_append(s, "\"detections\":[");
+    for (guint i = 0; i < m->num_objects; i++) {
+        if (i > 0) g_string_append(s, ",");
+        g_string_append_printf(s,
+            "{\"class_id\":%u,\"confidence\":", host[i].class_id);
+        append_float(s, host[i].confidence);
+        g_string_append(s, ",\"bbox\":{\"x\":");
+        append_float(s, host[i].x);
+        g_string_append(s, ",\"y\":");
+        append_float(s, host[i].y);
+        g_string_append(s, ",\"w\":");
+        append_float(s, host[i].width);
+        g_string_append(s, ",\"h\":");
+        append_float(s, host[i].height);
+        g_string_append(s, "}}");
+    }
+    g_string_append(s, "]");
+}
+
+/* ──────────────────────────────────────────────
+ *  Segmentation masks serializer
+ * ────────────────────────────────────────────── */
+
+static gboolean probe_masks(MagmaInferenceMeta* m) {
+    return m && m->num_masks > 0 && m->masks_gpu && m->mask_width > 0 && m->mask_height > 0;
+}
+
+static void serialize_masks_json(MagmaInferenceMeta* m, GString* s) {
+    gsize n = (gsize)m->num_masks * m->mask_width * m->mask_height;
+    std::vector<float> host(n);
+    if (!GPU_MAP(m->masks_gpu, host)) {
+        g_string_append(s, "\"masks\":[]");
+        return;
+    }
+
+    g_string_append_printf(s, "\"masks\":{\"num_masks\":%u,\"mask_width\":%u,\"mask_height\":%u,\"data\":[",
+                           m->num_masks, m->mask_width, m->mask_height);
+
+    gsize total = n;
+    guint max_pixels = 64;
+    if (total > max_pixels) total = max_pixels;
+    for (gsize i = 0; i < total; i++) {
+        if (i > 0) g_string_append(s, ",");
+        g_string_append_printf(s, "%.6f", host[i]);
+    }
+    g_string_append(s, "]}");
+}
+
+/* ──────────────────────────────────────────────
+ *  Anomaly detection serializer
+ * ────────────────────────────────────────────── */
+
+static gboolean probe_anomaly(MagmaInferenceMeta* m) {
+    return m && m->has_anomaly;
+}
+
+static void serialize_anomaly_json(MagmaInferenceMeta* m, GString* s) {
+    g_string_append(s, "\"anomaly\":{\"score\":");
+    append_float(s, m->anomaly_score);
+
+    if (m->anomaly_heatmap) {
+        gsize hbytes = gst_memory_get_sizes(m->anomaly_heatmap, NULL, NULL);
+        std::vector<float> heat(hbytes / sizeof(float));
+        if (GPU_MAP(m->anomaly_heatmap, heat)) {
+            g_string_append(s, ",\"heatmap\":[");
+            gsize n = heat.size();
+            if (n > 64) n = 64;
+            for (gsize i = 0; i < n; i++) {
+                if (i > 0) g_string_append(s, ",");
+                g_string_append_printf(s, "%.6f", heat[i]);
+            }
+            g_string_append(s, "]");
+        }
+    }
+    g_string_append(s, "}");
+}
+
+/* ──────────────────────────────────────────────
+ *  Raw output tensors serializer
+ * ────────────────────────────────────────────── */
+
+static gboolean probe_tensors(MagmaInferenceMeta* m) {
+    return m && m->output_tensors && m->output_tensors->len > 0;
+}
+
+static void serialize_tensors_json(MagmaInferenceMeta* m, GString* s) {
+    g_string_append(s, "\"raw_outputs\":[");
+    for (guint i = 0; i < m->output_tensors->len; i++) {
+        if (i > 0) g_string_append(s, ",");
+        GstMemory* mem = (GstMemory*)g_ptr_array_index(m->output_tensors, i);
+        gsize bytes = gst_memory_get_sizes(mem, NULL, NULL);
+        std::vector<float> host(bytes / sizeof(float));
+        if (!GPU_MAP(mem, host)) {
+            g_string_append(s, "[]");
+            continue;
+        }
+        gsize nf = host.size();
+        g_string_append_printf(s, "[%zu floats]:[", nf);
+        if (nf > 16) nf = 16;
+        for (gsize j = 0; j < nf; j++) {
+            if (j > 0) g_string_append(s, ",");
+            append_float(s, host[j]);
+        }
+        g_string_append(s, "]");
+    }
+    g_string_append(s, "]");
+}
+
+/* ──────────────────────────────────────────────
+ *  Serializer registry
+ *  Add new entries here for future model output types.
+ * ────────────────────────────────────────────── */
+
+static const SerializerEntry serializers[] = {
+    {"detections", probe_detections, serialize_detections_json},
+    {"masks",      probe_masks,      serialize_masks_json},
+    {"anomaly",    probe_anomaly,    serialize_anomaly_json},
+    {"raw_outputs",probe_tensors,    serialize_tensors_json},
+    {NULL,         NULL,             NULL}
+};
+
+/* ──────────────────────────────────────────────
+ *  Main serialize functions
+ * ────────────────────────────────────────────── */
+
 static gchar* serialize_to_json(MagmaInferenceMeta* m, int* out_len) {
     GString* s = g_string_new("");
 
-    if (!m || m->num_objects == 0) {
-        g_string_append(s, "{\"objects\":[]}");
-        *out_len = (int)s->len;
-        return g_string_free(s, FALSE);
+    g_string_append(s, "{");
+    if (m) {
+        g_string_append_printf(s, "\"source_width\":%u,\"source_height\":%u,",
+                               m->source_width, m->source_height);
     }
-
-    /* read objects_gpu DMABuf back to CPU */
-    gsize bytes = (gsize)m->num_objects * sizeof(MagmaInferObjectGPU);
-    MagmaInferObjectGPU* host = (MagmaInferObjectGPU*)g_malloc(bytes);
-
-    GstMapFlags flags = GST_MAP_READ;
-    GstMapInfo info;
-    if (gst_memory_map(m->objects_gpu, &info, flags)) {
-        memcpy(host, info.data, bytes);
-        gst_memory_unmap(m->objects_gpu, &info);
-    } else {
-        /* fallback: send empty result */
-        g_free(host);
-        g_string_append(s, "{\"objects\":[]}");
-        *out_len = (int)s->len;
-        return g_string_free(s, FALSE);
-    }
-
-    g_string_append_printf(s,
-                           "{\"source_width\":%u,\"source_height\":%u,"
-                           "\"timestamp_ns\":%" G_GUINT64_FORMAT ","
-                           "\"objects\":[",
-                           m->source_width,
-                           m->source_height,
+    g_string_append_printf(s, "\"timestamp_ns\":%" G_GUINT64_FORMAT,
                            (guint64)g_get_real_time() * 1000);
 
-    for (guint i = 0; i < m->num_objects; i++) {
-        if (i > 0)
-            g_string_append(s, ",");
-        g_string_append(s, "{\"class_id\":");
-        g_string_append_printf(s, "%u", host[i].class_id);
-        g_string_append(s, ",\"confidence\":");
-        append_float(s, "%.6f", host[i].confidence);
-        g_string_append(s, ",\"bbox\":{\"x\":");
-        append_float(s, "%.6f", host[i].x);
-        g_string_append(s, ",\"y\":");
-        append_float(s, "%.6f", host[i].y);
-        g_string_append(s, ",\"w\":");
-        append_float(s, "%.6f", host[i].width);
-        g_string_append(s, ",\"h\":");
-        append_float(s, "%.6f", host[i].height);
-        g_string_append(s, "}}");
+    gboolean any = FALSE;
+    for (const SerializerEntry* e = serializers; e->key; e++) {
+        if (e->probe(m)) {
+            g_string_append_c(s, ',');
+            e->to_json(m, s);
+            any = TRUE;
+        }
     }
-    g_string_append(s, "]}");
-    g_free(host);
 
+    if (!any && m) {
+        g_string_append(s, ",\"detections\":[]");
+    }
+
+    g_string_append(s, "}");
     *out_len = (int)s->len;
     return g_string_free(s, FALSE);
 }
@@ -86,36 +223,25 @@ static gchar* serialize_to_json(MagmaInferenceMeta* m, int* out_len) {
 
 static gchar* serialize_to_protobuf(MagmaInferenceMeta* m, int* out_len) {
     magma::FrameResult result;
-    result.set_source_width(m->source_width);
-    result.set_source_height(m->source_height);
+    if (m) {
+        result.set_source_width(m->source_width);
+        result.set_source_height(m->source_height);
+    }
     result.set_timestamp_ns((guint64)g_get_real_time() * 1000);
 
-    if (m && m->num_objects > 0) {
-        gsize bytes = (gsize)m->num_objects * sizeof(MagmaInferObjectGPU);
-        MagmaInferObjectGPU* host = (MagmaInferObjectGPU*)g_malloc(bytes);
-
-        GstMapFlags flags = GST_MAP_READ;
-        GstMapInfo info;
-        if (gst_memory_map(m->objects_gpu, &info, flags)) {
-            memcpy(host, info.data, bytes);
-            gst_memory_unmap(m->objects_gpu, &info);
-        } else {
-            g_free(host);
-            std::string data = result.SerializeAsString();
-            *out_len = (int)data.size();
-            return g_strndup(data.data(), data.size());
+    if (probe_detections(m)) {
+        std::vector<MagmaInferObjectGPU> host((gsize)m->num_objects);
+        if (GPU_MAP(m->objects_gpu, host)) {
+            for (guint i = 0; i < m->num_objects; i++) {
+                magma::Detection* d = result.add_objects();
+                d->set_class_id(host[i].class_id);
+                d->set_confidence(host[i].confidence);
+                d->set_x(host[i].x);
+                d->set_y(host[i].y);
+                d->set_width(host[i].width);
+                d->set_height(host[i].height);
+            }
         }
-
-        for (guint i = 0; i < m->num_objects; i++) {
-            magma::Detection* d = result.add_objects();
-            d->set_class_id(host[i].class_id);
-            d->set_confidence(host[i].confidence);
-            d->set_x(host[i].x);
-            d->set_y(host[i].y);
-            d->set_width(host[i].width);
-            d->set_height(host[i].height);
-        }
-        g_free(host);
     }
 
     std::string data = result.SerializeAsString();
@@ -125,17 +251,6 @@ static gchar* serialize_to_protobuf(MagmaInferenceMeta* m, int* out_len) {
 #endif
 
 /* ---------- transform ---------- */
-/**
- * @brief Main transform entry point — serialize inference results.
- *
- * Reads MagmaInferenceMeta, formats detection objects as JSON
- * or Protobuf, and writes the serialized string to the output buffer.
- *
- * @param trans The base transform element
- * @param inbuf  Input buffer with MagmaInferenceMeta
- * @param outbuf Output buffer with serialized data
- * @return GST_FLOW_OK on success
- */
 static GstFlowReturn gst_magma_serialize_transform(GstBaseTransform* trans, GstBuffer* inbuf, GstBuffer* outbuf) {
     GstMagmaSerialize* self = GST_MAGMA_SERIALIZE(trans);
 
@@ -192,7 +307,6 @@ static gboolean gst_magma_serialize_set_caps(GstBaseTransform* trans, GstCaps* i
 }
 
 static gboolean gst_magma_serialize_transform_size(GstBaseTransform* trans, GstPadDirection direction, GstCaps* caps, gsize size, GstCaps* othercaps, gsize* othersize) {
-    /* output size is 0 — we allocate in transform() */
     *othersize = 0;
     return TRUE;
 }
@@ -248,7 +362,7 @@ static void gst_magma_serialize_class_init(GstMagmaSerializeClass* klass) {
     gst_element_class_add_static_pad_template(element_class, &sink_template);
     gst_element_class_add_static_pad_template(element_class, &src_template);
 
-    gst_element_class_set_static_metadata(element_class, "Magma Serialize", "Filter/Converter", "Serializes MagmaInferenceMeta to JSON or protobuf", "Magma");
+    gst_element_class_set_static_metadata(element_class, "Magma Serialize", "Filter/Converter", "Serializes MagmaInferenceMeta (detections, masks, anomaly, raw tensors) to JSON or protobuf", "Magma");
 
     trans->transform_caps = gst_magma_serialize_transform_caps;
     trans->transform_size = gst_magma_serialize_transform_size;

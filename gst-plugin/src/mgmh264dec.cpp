@@ -1,11 +1,11 @@
 #include "mgmh264dec.hpp"
 #include "magma-meta.h"
 #include "magma-hip-stream.hpp"
+#include "kernel_utils.hpp"
 
 #include "roc_video_dec.h"
 #include <rocprofiler-sdk-roctx/roctx.h>
 #include <gst/allocators/gstdmabuf.h>
-#include <hip/hiprtc.h>
 #include <string>
 #include <queue>
 #include <cstring>
@@ -256,42 +256,16 @@ static hipError_t ensure_nv12_i420_kernel(GstMagmaH264Dec* self) {
     if (nv12_i420_func)
         return hipSuccess;
 
-    hiprtcProgram prog = nullptr;
-    hiprtcResult rt = hiprtcCreateProgram(&prog, nv12_i420_kernel_src, "nv12_i420_kernel", 0, nullptr, nullptr);
-    if (rt != HIPRTC_SUCCESS) {
-        GST_ERROR_OBJECT(self, "hiprtcCreateProgram failed: %d", (int)rt);
+    HipKernel k = compile_kernel_from_string(
+        nv12_i420_kernel_src, sizeof(nv12_i420_kernel_src) - 1,
+        "nv12_to_i420", "nv12_i420_kernel");
+    if (!k.func) {
+        GST_ERROR_OBJECT(self, "compile_kernel_from_string(nv12_i420_kernel) failed");
         return hipErrorUnknown;
     }
-
-    hipDeviceProp_t props{};
-    (void)hipGetDeviceProperties(&props, 0);
-    std::string arch_str = std::string("--gpu-architecture=") + props.gcnArchName;
-    auto colon = arch_str.find(':');
-    if (colon != std::string::npos)
-        arch_str.resize(colon);
-    const char* opts[] = {arch_str.c_str()};
-    rt = hiprtcCompileProgram(prog, 1, opts);
-    if (rt != HIPRTC_SUCCESS) {
-        size_t log_sz = 0;
-        hiprtcGetProgramLogSize(prog, &log_sz);
-        std::string log(log_sz, '\0');
-        hiprtcGetProgramLog(prog, &log[0]);
-        GST_ERROR_OBJECT(self, "hiprtc compile failed: %s", log.c_str());
-        hiprtcDestroyProgram(&prog);
-        return hipErrorUnknown;
-    }
-
-    size_t code_sz = 0;
-    hiprtcGetCodeSize(prog, &code_sz);
-    std::vector<char> code(code_sz);
-    hiprtcGetCode(prog, code.data());
-    hiprtcDestroyProgram(&prog);
-
-    hipError_t e = hipModuleLoadData(&nv12_i420_module, code.data());
-    if (e != hipSuccess)
-        return e;
-    e = hipModuleGetFunction(&nv12_i420_func, nv12_i420_module, "nv12_to_i420");
-    return e;
+    nv12_i420_module = k.module;
+    nv12_i420_func = k.func;
+    return hipSuccess;
 }
 
 static GstBuffer* create_output_buffer(
@@ -555,6 +529,8 @@ static GstFlowReturn gst_magma_h264_dec_drain(GstVideoDecoder* decoder) {
         finish_pending_frame(decoder, pf->frame, stub, pf->pts_roc * 100);
         pending_pop_front(self);
     }
+
+    hipStreamSynchronize(magma_get_shared_hip_stream());
 
     return GST_FLOW_OK;
 }

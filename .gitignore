@@ -30,3 +30,15 @@ CLAUDE.md
 CONVENTIONS.md
 .aider*
 AGENTS.md
+
+# Temp dev artifacts
+_tmp
+
+# Random trash files
+*.img
+
+# Vendored libs — use system packages instead
+gst-plugin/third_party/
+
+# Training artifacts
+gst-plugin/tests/training/*

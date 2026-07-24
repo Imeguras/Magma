@@ -36,7 +36,12 @@ struct _GstMagmaPreproc {
     /* ── Properties ──────────────────────────────────────────── */
     gint net_width;      /**< Target tensor width (pixels) */
     gint net_height;     /**< Target tensor height (pixels) */
-    gfloat scale_factor; /**< Pixel multiplier applied after normalisation */
+    gfloat scale_factor; /**< Pixel multiplier applied before mean/std */
+    gchar* config_file;  /**< Optional TOML config file path */
+
+    /* ── Per-channel mean/std (ImageNet-style normalization) ─── */
+    gfloat mean_r, mean_g, mean_b;
+    gfloat std_r, std_g, std_b;
 
     gboolean enable_roi; /**< If TRUE, crop source to ROI before resize */
     gint roi_x;          /**< ROI left coordinate in source frame */
