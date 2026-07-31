@@ -48,4 +48,18 @@ RUN groupadd -g 989 render
 # Already defined in meson.build:
 #   add_project_arguments('-D__HIP_PLATFORM_AMD__', language: 'cpp')
 
+# ── AMD Quark INT8 quantization environment ────────────────────────
+# Create a venv in /opt/magma-quark with AMD Quark + runtime deps.
+# Used by magma_compile (INT8 precision) via quark_quantize.py.
+RUN apt-get install -y python3-venv python3-pip \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 -m venv /opt/magma-quark \
+    && /opt/magma-quark/bin/pip install --quiet --upgrade pip \
+    && /opt/magma-quark/bin/pip install --quiet \
+        amd-quark pillow onnxruntime numpy \
+    && rm -rf /root/.cache/pip
+
+# Make the venv python discoverable by magma_compile
+ENV QUARK_PYTHON=/opt/magma-quark/bin/python3
+
 WORKDIR /workspace

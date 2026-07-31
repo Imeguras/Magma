@@ -10,6 +10,7 @@
 #include <gst/base/gstbasetransform.h>
 #include <hip/hip_runtime.h>
 #include "magma-infer-meta.h"
+#include "magma-primitives.h"
 #include "magma_parser_api.h"
 
 G_BEGIN_DECLS
@@ -50,6 +51,11 @@ struct _GstMagmaInfer {
     MagmaInferObjectGPU* d_objects;
     guint max_objects;
 
+    float* d_masks_buffer;          /* GPU buffer for compacted mask data */
+    int    d_masks_buffer_bytes;    /* current allocation size */
+    int    d_masks_h;               /* runtime mask height from model output */
+    int    d_masks_w;               /* runtime mask width */
+
     int* d_num_det;
 
     hipStream_t hip_stream;
@@ -65,6 +71,19 @@ struct _GstMagmaInfer {
     gchar* parser_func_name;
     void* parser_handle;
     MagmaParseFunc parser_func;
+
+    /* compile hook */
+    gchar* compile_func_name;
+    MagmaCompileFunc compile_func;
+
+    /* compile options (passed through to addon's magma_compile) */
+    gchar* compile_precision;
+    gchar* calib_data_path;
+
+    /* to_primitives hook (optional, discovered at parser load) */
+    MagmaToPrimitivesFunc to_primitives_func;
+    gchar* semantic_type_str;           /* from magma_semantic_type symbol */
+    gboolean to_primitives_exported;
 
     gchar* config_file;
     float confidence_thresh;

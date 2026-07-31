@@ -1,88 +1,72 @@
 #pragma once
 
-/**
- * @file magma_parser_api.h
- * @brief Parser plugin C API for model output post-processing.
- *
- * Parser plugins (YOLOv8, BiFormer, etc.) are loaded at runtime by
- * mgminfer via dlopen. They implement MagmaParseFunc to convert
- * raw model output tensors into MagmaParsedObject arrays.
- */
-
 #include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/**
- * @brief A single parsed detection object.
- *
- * Coordinates are normalized 0..1 relative to the model input dimensions.
- */
+/* ---------- detection output ---------- */
+
 typedef struct {
     int    class_id;
     float  confidence;
-    float  x, y, w, h;       /**< normalized 0..1 relative to input dimensions */
+    float  x, y, w, h;       /* normalized 0..1 relative to input dimensions */
 } MagmaParsedObject;
 
-/**
- * @brief Parameters passed from mgminfer to the parser plugin.
- *
- * Valid only during the parser function call -- the parser must copy
- * any data it needs to retain.
- */
+/* ---------- parser params (mgminfer → parser) ---------- */
+
 typedef struct {
-    /** ── Legacy single-output fields ────────────────────────────────
-     *  If num_raw_outputs == 0 these are the only outputs available.
-     *  If num_raw_outputs  > 0 they mirror output index 0 and the
-     *  multi-output arrays below should be preferred.
-     */
-    const void*    d_raw_output;       /**< raw GPU pointer (first output) */
-    const int64_t* output_shape;        /**< shape (first output) */
-    int            num_dims;            /**< num dims (first output) */
+    /* legacy single-output fields (mirror output[0] when num_raw_outputs > 0) */
+    const void*    d_raw_output;
+    const int64_t* output_shape;
+    int            num_dims;
 
-    /** ── Multi-output support ───────────────────────────────────────
-     *  num_raw_outputs == 0 → legacy mode (arrays below may be NULL).
-     *  num_raw_outputs  > 0 → use the arrays below for all outputs.
-     */
-    int            num_raw_outputs;     /**< number of model outputs */
-    const void**   d_raw_outputs;       /**< array of GPU ptrs, size num_raw_outputs */
-    const int64_t** output_shapes;      /**< array of shape ptrs, size num_raw_outputs */
-    const int*     num_dims_list;       /**< array of ndims,  size num_raw_outputs */
+    /* multi-output support: num_raw_outputs == 0 → legacy mode */
+    int            num_raw_outputs;
+    const void**   d_raw_outputs;       /* array of GPU ptrs, size num_raw_outputs */
+    const int64_t** output_shapes;      /* array of shape ptrs, size num_raw_outputs */
+    const int*     num_dims_list;       /* array of ndims,  size num_raw_outputs */
 
-    /** Model input width (for box denormalization) */
+    /* model input dimensions (for box denormalization) */
     int            net_width;
-
-    /** Model input height (for box denormalization) */
     int            net_height;
 
-    /** Confidence threshold */
+    /* thresholds */
     float          confidence_thresh;
-
-    /** NMS IoU threshold */
     float          nms_thresh;
-
-    /** Maximum number of detections to return */
     int            max_detections;
 
-    /** Pre-allocated GPU DMABuf for output objects (max_detections entries) */
+    /* GPU output buffer: pre-allocated DMABuf-backed, max_detections * sizeof(MagmaParsedObject) */
     void*          d_objects;
-
-    /** GPU pointer to int — parser writes detected count here */
+    /* GPU output count: single int on device, parser sets via hipMemcpy or atomicAdd */
     int*           d_num_detected;
 
-    /** HIP stream for kernel launches (opaque handle) */
+    /* mask output (for instance segmentation models) */
+    void*          d_masks;       /* pre-allocated GPU buffer — parser writes compacted mask data here */
+    int            mask_h;        /* mask height (0 = no masks) */
+    int            mask_w;        /* mask width */
+
+    /* HIP stream for kernel launches (opaque — cast in impl) */
     void*          stream;
 } MagmaParseParams;
 
-/**
- * @brief Parser plugin entry point.
- *
- * @param params Input/output parameters (see MagmaParseParams)
- * @return 0 on success, nonzero on error
- */
+/* return value: 0 = success, nonzero = error */
 typedef int (*MagmaParseFunc)(MagmaParseParams* params);
+
+/* ─── Compile hook (optional, exported as "magma_compile") ────────── */
+
+typedef struct {
+    const char*  onnx_path;          /* source ONNX file */
+    const char*  mxr_output_path;    /* path to write compiled .mxr */
+    int          device_id;          /* GPU device ID */
+    const char*  precision;          /* "FP32", "FP16", "INT8" */
+    const char*  calib_data_path;    /* calibration file (INT8) or NULL */
+    int          batch_size;         /* inference batch size */
+    const char*  const* extras;      /* null-terminated key=value pairs or NULL */
+} MagmaCompileParams;
+
+typedef int (*MagmaCompileFunc)(const MagmaCompileParams* params);
 
 #ifdef __cplusplus
 }

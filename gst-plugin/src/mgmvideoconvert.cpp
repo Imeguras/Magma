@@ -62,7 +62,7 @@ static gboolean create_gpu_dmabuf(GstMagmaVideoConvert* self) {
     // gbm_bo_get_stride returns the aligned stride (e.g. 768 for width 640)
     // So total size = stride * height + stride * (height/2) = stride * height * 3/2
     guint bo_height = self->in_height * 3 / 2;
-    self->gbm_bo = gbm_bo_create(self->gbm_dev, self->in_width, bo_height, GBM_FORMAT_R8, GBM_BO_USE_RENDERING);
+    self->gbm_bo = gbm_bo_create(self->gbm_dev, self->in_width, bo_height, GBM_FORMAT_R8, GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR);
     if (!self->gbm_bo) {
         GST_ERROR_OBJECT(self, "gbm_bo_create(%dx%d, R8) failed", self->in_width, bo_height);
         gbm_device_destroy(self->gbm_dev);

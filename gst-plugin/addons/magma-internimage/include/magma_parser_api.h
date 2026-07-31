@@ -42,12 +42,31 @@ typedef struct {
     /* GPU output count: single int on device, parser sets via hipMemcpy or atomicAdd */
     int*           d_num_detected;
 
+    /* mask output (for instance segmentation models) */
+    void*          d_masks;       /* pre-allocated GPU buffer — parser writes compacted mask data here */
+    int            mask_h;        /* mask height (0 = no masks) */
+    int            mask_w;        /* mask width */
+
     /* HIP stream for kernel launches (opaque — cast in impl) */
     void*          stream;
 } MagmaParseParams;
 
 /* return value: 0 = success, nonzero = error */
 typedef int (*MagmaParseFunc)(MagmaParseParams* params);
+
+/* ─── Compile hook (optional, exported as "magma_compile") ────────── */
+
+typedef struct {
+    const char*  onnx_path;          /* source ONNX file */
+    const char*  mxr_output_path;    /* path to write compiled .mxr */
+    int          device_id;          /* GPU device ID */
+    const char*  precision;          /* "FP32", "FP16", "INT8" */
+    const char*  calib_data_path;    /* calibration file (INT8) or NULL */
+    int          batch_size;         /* inference batch size */
+    const char*  const* extras;      /* null-terminated key=value pairs or NULL */
+} MagmaCompileParams;
+
+typedef int (*MagmaCompileFunc)(const MagmaCompileParams* params);
 
 #ifdef __cplusplus
 }

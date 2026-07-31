@@ -150,3 +150,130 @@ MagmaHipMeta* magma_buffer_add_hip_meta(GstBuffer* buffer, hipDeviceptr_t d_ptr,
     }
     return m;
 }
+
+/* ─── MagmaSemanticMeta ─────────────────────────────────────────────── */
+
+#include "magma-primitives.h"
+
+static gsize _magma_semantic_meta_quark = 0;
+
+GType magma_semantic_meta_api_get_type(void) {
+    if (g_once_init_enter(&_magma_semantic_meta_quark)) {
+        const gchar* tags[] = {NULL};
+        GType t = gst_meta_api_type_register("MagmaSemanticMetaAPI", tags);
+        g_once_init_leave(&_magma_semantic_meta_quark, (gsize)t);
+    }
+    return (GType)_magma_semantic_meta_quark;
+}
+
+static gboolean magma_semantic_meta_init(GstMeta* meta, gpointer params, GstBuffer* buffer) {
+    MagmaSemanticMeta* m = (MagmaSemanticMeta*)meta;
+    m->type_id = 0;
+    m->data_gpu = NULL;
+    m->source_width = 0;
+    m->source_height = 0;
+    m->roi_x = m->roi_y = m->roi_w = m->roi_h = 0;
+    m->model_width = m->model_height = 0;
+    m->masks_gpu = NULL;
+    m->mask_count = 0;
+    m->mask_width = 0;
+    m->mask_height = 0;
+    m->d_masks_gpu = 0;
+    m->d_objects_gpu = 0;
+    m->masks_gpu_bytes = 0;
+    return TRUE;
+}
+
+static void magma_semantic_meta_free(GstMeta* meta, GstBuffer* buffer) {
+    MagmaSemanticMeta* m = (MagmaSemanticMeta*)meta;
+    if (m->data_gpu) {
+        gst_memory_unref(m->data_gpu);
+        m->data_gpu = NULL;
+    }
+    if (m->masks_gpu) {
+        gst_memory_unref(m->masks_gpu);
+        m->masks_gpu = NULL;
+    }
+}
+
+static gboolean magma_semantic_meta_transform(GstBuffer* transbuf, GstMeta* meta,
+                                               GstBuffer* buffer, GQuark type,
+                                               gpointer data) {
+    if (type != 0) return FALSE;
+    MagmaSemanticMeta* src = (MagmaSemanticMeta*)meta;
+    MagmaSemanticMeta* dest = magma_buffer_add_semantic_meta(transbuf,
+        src->type_id,
+        src->data_gpu ? gst_memory_ref(src->data_gpu) : NULL,
+        src->source_width, src->source_height);
+    if (!dest) return FALSE;
+    dest->roi_x = src->roi_x;
+    dest->roi_y = src->roi_y;
+    dest->roi_w = src->roi_w;
+    dest->roi_h = src->roi_h;
+    dest->model_width = src->model_width;
+    dest->model_height = src->model_height;
+    dest->mask_count = src->mask_count;
+    dest->mask_width = src->mask_width;
+    dest->mask_height = src->mask_height;
+    if (src->masks_gpu)
+        dest->masks_gpu = gst_memory_ref(src->masks_gpu);
+    dest->d_masks_gpu = src->d_masks_gpu;
+    dest->d_objects_gpu = src->d_objects_gpu;
+    dest->masks_gpu_bytes = src->masks_gpu_bytes;
+    return TRUE;
+}
+
+static gsize _magma_semantic_meta_info = 0;
+
+const GstMetaInfo* magma_semantic_meta_get_info(void) {
+    if (g_once_init_enter(&_magma_semantic_meta_info)) {
+        const GstMetaInfo* info = gst_meta_register(
+            MAGMA_SEMANTIC_META_API_TYPE, "MagmaSemanticMeta",
+            sizeof(MagmaSemanticMeta),
+            magma_semantic_meta_init, magma_semantic_meta_free,
+            magma_semantic_meta_transform);
+        if (!info)
+            info = gst_meta_get_info("MagmaSemanticMeta");
+        g_once_init_leave(&_magma_semantic_meta_info, (gsize)info);
+    }
+    return (const GstMetaInfo*)_magma_semantic_meta_info;
+}
+
+MagmaSemanticMeta* magma_buffer_add_semantic_meta(GstBuffer* buffer,
+    GQuark type_id, GstMemory* data_gpu,
+    gint source_width, gint source_height)
+{
+    MagmaSemanticMeta* m = (MagmaSemanticMeta*)gst_buffer_add_meta(
+        buffer, magma_semantic_meta_get_info(), NULL);
+    if (m) {
+        m->type_id = type_id;
+        m->data_gpu = data_gpu ? gst_memory_ref(data_gpu) : NULL;
+        m->source_width = source_width;
+        m->source_height = source_height;
+    }
+    return m;
+}
+
+MagmaSemanticMeta* magma_buffer_add_semantic_meta_full(GstBuffer* buffer,
+    GQuark type_id, GstMemory* data_gpu,
+    gint source_width, gint source_height,
+    GstMemory* masks_gpu, gint mask_count,
+    gint mask_width, gint mask_height)
+{
+    MagmaSemanticMeta* m = magma_buffer_add_semantic_meta(
+        buffer, type_id, data_gpu, source_width, source_height);
+    if (m) {
+        m->masks_gpu = masks_gpu ? gst_memory_ref(masks_gpu) : NULL;
+        m->mask_count = mask_count;
+        m->mask_width = mask_width;
+        m->mask_height = mask_height;
+    }
+    return m;
+}
+
+/* ─── Auto-register default converters ─────────────────────────────── */
+
+__attribute__((constructor))
+static void magma_meta_lib_init(void) {
+    magma_primitives_auto_register();
+}

@@ -35,6 +35,7 @@ kernel_src_dir = meson.current_source_dir() / 'kernels'
 magma_meta_sources = [
   'src/magma-meta.cpp',
   'src/magma-infer-meta.cpp',
+  'src/magma-primitives.cpp',
 ]
 
 magma_meta_shlib = shared_library('magma-meta',
@@ -183,9 +184,32 @@ mgmosd_shlib = shared_library('mgmosd',
   install_dir: plugins_install_dir,
 )
 
+# Plugin: mgmeglvideosink — EGL/X11 desktop sink (zero-copy dmabuf)
+epoxy_dep = dependency('epoxy', required : true)
+xcb_dep = dependency('xcb', required : true)
+xcb_util_dep = dependency('xcb-util', required : true)
+
+mgmeglvideosink_sources = ['src/mgmeglvideosink.cpp']
+
+mgmeglvideosink_shlib = shared_library('mgmeglvideosink',
+  mgmeglvideosink_sources,
+  c_args: plugin_c_args,
+  cpp_args: ['-std=c++17'],
+  include_directories: [inc, hip_inc],
+  dependencies: [gst_dep, gstbase_dep, gstvideo_dep, gstallocators_dep,
+                 magma_meta_dep, epoxy_dep, xcb_dep, xcb_util_dep, drm_dep],
+  install: true,
+  install_dir: plugins_install_dir,
+)
+
 # Install kernel sources for runtime JIT loading on deployed systems
-install_data('kernels/preproc_kernels.hip', 'kernels/common.hip', 'kernels/dummy_infer.hip', 'kernels/osd_kernels.hip', 'kernels/videoconvert_kernels.hip',
+install_data('kernels/preproc_kernels.hip', 'kernels/common.hip', 'kernels/dummy_infer.hip', 'kernels/osd_kernels.hip', 'kernels/osd_primitives_kernels.hip', 'kernels/videoconvert_kernels.hip',
   install_dir: get_option('datadir') / 'magma' / 'kernels',
+)
+
+# Install helper scripts (quark_quantize, etc.)
+install_data('../scripts/quark_quantize.py',
+  install_dir: get_option('datadir') / 'magma' / 'scripts',
 )
 
 # ========================================================

@@ -2,7 +2,7 @@ ROCM_PATH ?= /opt/rocm
 HIPCC ?= hipcc
 BUILD_DIR ?= build
 CFLAGS  = -std=c++17 -fPIC -Iinclude -I$(ROCM_PATH)/include -O3
-LDFLAGS = -shared -L$(ROCM_PATH)/lib -lamdhip64
+LDFLAGS = -shared -L$(ROCM_PATH)/lib -lamdhip64 -lmigraphx_c
 
 TARGET = $(BUILD_DIR)/libyolov8-parser.so
 

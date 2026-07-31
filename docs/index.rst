@@ -17,6 +17,7 @@ open-source alternative to NVIDIA DeepStream.
    plugins/mgmtensordump
    plugins/mgmkpublish
    plugins/mgmdisplay
+   plugins/mgmeglvideosink
 
 .. toctree::
    :maxdepth: 1

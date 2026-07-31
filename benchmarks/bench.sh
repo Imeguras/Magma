@@ -64,11 +64,17 @@ header $'\n─── 3. Preproc (no inference) ───────────
 run "preproc (224x224)" $DEC ! mgmvideoconvert ! mgmpreproc net-width=224 net-height=224
 run "preproc (640x640)" $DEC ! mgmvideoconvert ! mgmpreproc net-width=640 net-height=640
 
-header $'\n─── 4. YOLOv8n inference ──────────────────────'
-YOLO="$DEC ! mgmvideoconvert ! mgmpreproc net-width=640 net-height=640 ! mgminfer model-onnx-file=$ONNX_DIR/yolov8n.onnx model-mxr-file=$MXR_DIR/yolov8n.mxr parser-plugin=$ADDONS/libyolov8-parser.so confidence-threshold=0.51 nms-threshold=0.45 max-detections=1000"
-run "infer only" $YOLO
-run "infer + osd labels" $YOLO ! mgmosd show-labels=true ! mgmvideoconvert
-run "infer + osd no labels" $YOLO ! mgmosd show-labels=false ! mgmvideoconvert
+header $'\n─── 4. YOLOv8n inference (FP32) ──────────────'
+YOLO_FP32="$DEC ! mgmvideoconvert ! mgmpreproc net-width=640 net-height=640 ! mgminfer model-onnx-file=$ONNX_DIR/yolov8n.onnx model-mxr-file=$MXR_DIR/yolov8n.mxr parser-plugin=$ADDONS/libyolov8-parser.so confidence-threshold=0.51 nms-threshold=0.45 max-detections=1000"
+run "FP32 infer only" $YOLO_FP32
+run "FP32 infer + osd labels" $YOLO_FP32 ! mgmosd show-labels=true ! mgmvideoconvert
+run "FP32 infer + osd no labels" $YOLO_FP32 ! mgmosd show-labels=false ! mgmvideoconvert
+
+header $'\n─── 4b. YOLOv8n inference (INT8) ─────────────'
+YOLO_INT8="$DEC ! mgmvideoconvert ! mgmpreproc net-width=640 net-height=640 ! mgminfer model-mxr-file=$MXR_DIR/yolov8n_int8.mxr parser-plugin=$ADDONS/libyolov8-parser.so confidence-threshold=0.51 nms-threshold=0.45 max-detections=1000"
+run "INT8 infer only" $YOLO_INT8
+run "INT8 infer + osd labels" $YOLO_INT8 ! mgmosd show-labels=true ! mgmvideoconvert
+run "INT8 infer + osd no labels" $YOLO_INT8 ! mgmosd show-labels=false ! mgmvideoconvert
 
 header $'\n─── 5. BiFormer (descriptor) ──────────────────'
 BIF="$DEC ! mgmvideoconvert ! mgmpreproc net-width=224 net-height=224 ! mgminfer model-onnx-file=$ONNX_DIR/biformer_tiny.onnx model-mxr-file=$MXR_DIR/biformer_tiny.mxr parser-plugin=$ADDONS/libmagmabiformer-desc-parser.so confidence-threshold=0.50 max-detections=5"

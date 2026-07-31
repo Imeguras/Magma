@@ -159,4 +159,89 @@ __global__ void nms_compact_kernel(
     o[5] = fmaxf(y2 - y1, 0.0f) / (float)net_h;
 }
 
+/* ── Cascade (pre-NMS proposals) kernel ──────────────────────────── */
+
+__global__ void cascade_filter_kernel(
+    const float* __restrict__ data,
+    float*       __restrict__ out,
+    int*         __restrict__ counter,
+    int N, int stride,
+    float conf_thresh, float max_out,
+    int net_w, int net_h)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= N) return;
+
+    float x1 = data[i * stride + 0];
+    float y1 = data[i * stride + 1];
+    float x2 = data[i * stride + 2];
+    float y2 = data[i * stride + 3];
+    float score = data[i * stride + 4];
+    float class_id = data[i * stride + 5];
+
+    if (score < conf_thresh)
+        return;
+
+    int idx = atomicAdd(counter, 1);
+    if (idx >= max_out) return;
+
+    out[idx * 7 + 0] = x1;
+    out[idx * 7 + 1] = y1;
+    out[idx * 7 + 2] = x2;
+    out[idx * 7 + 3] = y2;
+    out[idx * 7 + 4] = class_id;
+    out[idx * 7 + 5] = score;
+    out[idx * 7 + 6] = (float)i;
+}
+
+__global__ void cascade_nms_kernel(
+    const float* __restrict__ detections,
+    float*       __restrict__ objects,
+    int*         __restrict__ out_counter,
+    const int*   __restrict__ d_num_survivors,
+    int max_out, float nms_thresh,
+    int net_w, int net_h)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int M = min(*d_num_survivors, max_out);
+    if (tid >= M) return;
+
+    float x1 = detections[tid * 7 + 0];
+    float y1 = detections[tid * 7 + 1];
+    float x2 = detections[tid * 7 + 2];
+    float y2 = detections[tid * 7 + 3];
+    int cls = (int)detections[tid * 7 + 4];
+    float score = detections[tid * 7 + 5];
+
+    float max_coord = (float)(net_w + net_h);
+    float offset = (float)cls * (max_coord + 1.0f);
+
+    for (int j = 0; j < tid; j++) {
+        float jx1 = detections[j * 7 + 0];
+        float jy1 = detections[j * 7 + 1];
+        float jx2 = detections[j * 7 + 2];
+        float jy2 = detections[j * 7 + 3];
+        int jcls = (int)detections[j * 7 + 4];
+        float joffset = (float)jcls * (max_coord + 1.0f);
+
+        if (cls != jcls) continue;
+
+        float iou = box_iou(x1 + offset, y1, x2 + offset, y2,
+                            jx1 + joffset, jy1, jx2 + joffset, jy2);
+        if (iou > nms_thresh)
+            return;
+    }
+
+    int idx = atomicAdd(out_counter, 1);
+    if (idx >= max_out) return;
+
+    float* o = objects + idx * 6;
+    o[0] = (float)cls;
+    o[1] = score;
+    o[2] = x1 / (float)net_w;
+    o[3] = y1 / (float)net_h;
+    o[4] = fmaxf(x2 - x1, 0.0f) / (float)net_w;
+    o[5] = fmaxf(y2 - y1, 0.0f) / (float)net_h;
+}
+
 }

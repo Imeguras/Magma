@@ -13,6 +13,18 @@ test_infer_object = executable('test-infer-object',
 test('test-infer-object', test_infer_object)
 
 # -----------------------------------------------------------
+# test-primitives — MagmaPrimitiveList + default converter API
+# -----------------------------------------------------------
+test_primitives = executable('test-primitives',
+  ['test_primitives.cpp'],
+  cpp_args: ['-std=c++17'],
+  include_directories: [inc, hip_inc],
+  dependencies: [gst_dep, gstbase_dep, gstvideo_dep, gstallocators_dep,
+                 gst_check_dep, magma_meta_dep],
+)
+test('test-primitives', test_primitives)
+
+# -----------------------------------------------------------
 # test-inference-meta — MagmaInferenceMeta GstMeta API
 # -----------------------------------------------------------
 test_inference_meta = executable('test-inference-meta',

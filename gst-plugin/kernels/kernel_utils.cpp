@@ -251,6 +251,21 @@ static std::string get_arch_string() {
     return arch;
 }
 
+/* ── HIP include path for hiprtc ─────────────────────────────── */
+
+static std::string get_hip_include_path() {
+    /* Try HIP_PATH env var first, then hardcoded ROCm default */
+    const char* hip_path = std::getenv("HIP_PATH");
+    if (hip_path && hip_path[0]) {
+        return std::string(hip_path) + "/include";
+    }
+    const char* rocm_path = std::getenv("ROCM_PATH");
+    if (rocm_path && rocm_path[0]) {
+        return std::string(rocm_path) + "/include";
+    }
+    return "/opt/rocm/include";
+}
+
 /* ── public API ───────────────────────────────────────────────── */
 
 HipKernel compile_kernel(const char* hip_source_path, const char* entry_point,
@@ -300,10 +315,12 @@ HipKernel compile_kernel(const char* hip_source_path, const char* entry_point,
         return result;
     }
 
+    std::string hip_inc = get_hip_include_path();
     std::string arch_opt = std::string("--gpu-architecture=") + arch;
-    const char* opts[] = {arch_opt.c_str()};
+    std::string inc_opt = std::string("-I") + hip_inc;
+    const char* opts[] = {arch_opt.c_str(), inc_opt.c_str()};
 
-    r = hiprtcCompileProgram(prog, 1, opts);
+    r = hiprtcCompileProgram(prog, 2, opts);
     if (r != HIPRTC_SUCCESS) {
         size_t log_size;
         hiprtcGetProgramLogSize(prog, &log_size);
@@ -391,10 +408,12 @@ HipKernel compile_kernel_from_string(const char* source, size_t source_len,
         return result;
     }
 
+    std::string hip_inc = get_hip_include_path();
     std::string arch_opt = std::string("--gpu-architecture=") + arch;
-    const char* opts[] = {arch_opt.c_str()};
+    std::string inc_opt = std::string("-I") + hip_inc;
+    const char* opts[] = {arch_opt.c_str(), inc_opt.c_str()};
 
-    r = hiprtcCompileProgram(prog, 1, opts);
+    r = hiprtcCompileProgram(prog, 2, opts);
     if (r != HIPRTC_SUCCESS) {
         size_t log_size;
         hiprtcGetProgramLogSize(prog, &log_size);
