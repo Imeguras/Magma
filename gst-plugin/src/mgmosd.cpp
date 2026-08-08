@@ -373,6 +373,15 @@ static void dispatch_primitives(GstMagmaOsd* self,
         hipModuleLaunchKernel(self->kernel_funcs[MAGMA_PRIMITIVE_ARROW],
                               grid, 1, 1, block, 1, 1, 0, s, args, nullptr);
     }
+
+    /* Every launch above is async on `s`, and the primitive/vertex uploads
+     * read pageable host memory that magma_primitive_list_reset() reuses on
+     * the next frame.  Downstream consumers that map the DMABuf for CPU
+     * access (videoconvert -> pngenc) happen to sync for us, but a sink that
+     * imports it into a GL context (mgmeglvideosink) shares no ordering with
+     * this HIP stream and would sample the frame mid-draw.  Sync here so the
+     * overlay is complete before the buffer is pushed. */
+    (void)hipStreamSynchronize(s);
 }
 
 /* ─── convert legacy MagmaInferenceMeta → primitives (backwards compat) ── */

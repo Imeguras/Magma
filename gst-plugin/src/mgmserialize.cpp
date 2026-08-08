@@ -8,7 +8,7 @@
 GST_DEBUG_CATEGORY_STATIC(magma_serialize_debug);
 #define GST_CAT_DEFAULT magma_serialize_debug
 
-enum { PROP_0, PROP_FORMAT };
+enum { PROP_0, PROP_FORMAT, PROP_MAX_MASK_PIXELS };
 
 G_DEFINE_TYPE(GstMagmaSerialize, gst_magma_serialize, GST_TYPE_BASE_TRANSFORM)
 
@@ -21,7 +21,7 @@ static GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE("src", GST_PA
  *  Modular serializer interface
  * ────────────────────────────────────────────── */
 
-typedef void  (*SerializeFunc)(MagmaInferenceMeta* meta, GString* out);
+typedef void  (*SerializeFunc)(MagmaInferenceMeta* meta, GString* out, GstMagmaSerialize* self);
 
 typedef struct {
     const char*  key;        /* JSON key, e.g. "detections" */
@@ -57,7 +57,7 @@ static gboolean probe_detections(MagmaInferenceMeta* m) {
     return m && m->num_objects > 0 && m->objects_gpu;
 }
 
-static void serialize_detections_json(MagmaInferenceMeta* m, GString* s) {
+static void serialize_detections_json(MagmaInferenceMeta* m, GString* s, GstMagmaSerialize* self) {
     gsize n = (gsize)m->num_objects;
     std::vector<MagmaInferObjectGPU> host(n);
     if (!GPU_MAP(m->objects_gpu, host)) {
@@ -91,7 +91,7 @@ static gboolean probe_masks(MagmaInferenceMeta* m) {
     return m && m->num_masks > 0 && m->masks_gpu && m->mask_width > 0 && m->mask_height > 0;
 }
 
-static void serialize_masks_json(MagmaInferenceMeta* m, GString* s) {
+static void serialize_masks_json(MagmaInferenceMeta* m, GString* s, GstMagmaSerialize* self) {
     gsize n = (gsize)m->num_masks * m->mask_width * m->mask_height;
     std::vector<float> host(n);
     if (!GPU_MAP(m->masks_gpu, host)) {
@@ -103,13 +103,12 @@ static void serialize_masks_json(MagmaInferenceMeta* m, GString* s) {
                            m->num_masks, m->mask_width, m->mask_height);
 
     gsize total = n;
-    guint max_pixels = 64;
-    if (total > max_pixels) total = max_pixels;
+    if (total > self->max_mask_pixels) total = self->max_mask_pixels;
     for (gsize i = 0; i < total; i++) {
         if (i > 0) g_string_append(s, ",");
-        g_string_append_printf(s, "%.6f", host[i]);
+        append_float(s, host[i]);
     }
-    g_string_append(s, "]}");
+    g_string_append_printf(s, "],\"truncated\":%s}", total < n ? "true" : "false");
 }
 
 /* ──────────────────────────────────────────────
@@ -120,7 +119,7 @@ static gboolean probe_anomaly(MagmaInferenceMeta* m) {
     return m && m->has_anomaly;
 }
 
-static void serialize_anomaly_json(MagmaInferenceMeta* m, GString* s) {
+static void serialize_anomaly_json(MagmaInferenceMeta* m, GString* s, GstMagmaSerialize* self) {
     g_string_append(s, "\"anomaly\":{\"score\":");
     append_float(s, m->anomaly_score);
 
@@ -133,7 +132,7 @@ static void serialize_anomaly_json(MagmaInferenceMeta* m, GString* s) {
             if (n > 64) n = 64;
             for (gsize i = 0; i < n; i++) {
                 if (i > 0) g_string_append(s, ",");
-                g_string_append_printf(s, "%.6f", heat[i]);
+                append_float(s, heat[i]);
             }
             g_string_append(s, "]");
         }
@@ -149,7 +148,7 @@ static gboolean probe_tensors(MagmaInferenceMeta* m) {
     return m && m->output_tensors && m->output_tensors->len > 0;
 }
 
-static void serialize_tensors_json(MagmaInferenceMeta* m, GString* s) {
+static void serialize_tensors_json(MagmaInferenceMeta* m, GString* s, GstMagmaSerialize* self) {
     g_string_append(s, "\"raw_outputs\":[");
     for (guint i = 0; i < m->output_tensors->len; i++) {
         if (i > 0) g_string_append(s, ",");
@@ -189,7 +188,7 @@ static const SerializerEntry serializers[] = {
  *  Main serialize functions
  * ────────────────────────────────────────────── */
 
-static gchar* serialize_to_json(MagmaInferenceMeta* m, int* out_len) {
+static gchar* serialize_to_json(MagmaInferenceMeta* m, int* out_len, GstMagmaSerialize* self) {
     GString* s = g_string_new("");
 
     g_string_append(s, "{");
@@ -204,7 +203,7 @@ static gchar* serialize_to_json(MagmaInferenceMeta* m, int* out_len) {
     for (const SerializerEntry* e = serializers; e->key; e++) {
         if (e->probe(m)) {
             g_string_append_c(s, ',');
-            e->to_json(m, s);
+            e->to_json(m, s, self);
             any = TRUE;
         }
     }
@@ -267,7 +266,7 @@ static GstFlowReturn gst_magma_serialize_transform(GstBaseTransform* trans, GstB
         return GST_FLOW_NOT_SUPPORTED;
 #endif
     } else {
-        serialized = serialize_to_json(m, &len);
+        serialized = serialize_to_json(m, &len, self);
     }
 
     GstMemory* mem = gst_memory_new_wrapped(GST_MEMORY_FLAG_READONLY, serialized, len, 0, len, serialized, g_free);
@@ -319,6 +318,9 @@ static void gst_magma_serialize_set_property(GObject* object, guint prop_id, con
         g_free(self->format);
         self->format = g_value_dup_string(value);
         break;
+    case PROP_MAX_MASK_PIXELS:
+        self->max_mask_pixels = g_value_get_uint(value);
+        break;
     default:
         G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
         break;
@@ -330,6 +332,9 @@ static void gst_magma_serialize_get_property(GObject* object, guint prop_id, GVa
     switch (prop_id) {
     case PROP_FORMAT:
         g_value_set_string(value, self->format);
+        break;
+    case PROP_MAX_MASK_PIXELS:
+        g_value_set_uint(value, self->max_mask_pixels);
         break;
     default:
         G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
@@ -345,6 +350,7 @@ static void gst_magma_serialize_finalize(GObject* object) {
 
 static void gst_magma_serialize_init(GstMagmaSerialize* self) {
     self->format = g_strdup("json");
+    self->max_mask_pixels = 64;
 }
 
 /* ---------- class init ---------- */
@@ -358,6 +364,12 @@ static void gst_magma_serialize_class_init(GstMagmaSerializeClass* klass) {
     gobject_class->finalize = gst_magma_serialize_finalize;
 
     g_object_class_install_property(gobject_class, PROP_FORMAT, g_param_spec_string("format", "Format", "Serialization format: json or protobuf", "json", G_PARAM_READWRITE));
+
+    g_object_class_install_property(gobject_class, PROP_MAX_MASK_PIXELS,
+        g_param_spec_uint("max-mask-pixels", "Max mask pixels",
+                          "Maximum segmentation-mask floats emitted per buffer "
+                          "(a full set of N 160x160 masks needs N*25600)",
+                          0, G_MAXUINT, 64, G_PARAM_READWRITE));
 
     gst_element_class_add_static_pad_template(element_class, &sink_template);
     gst_element_class_add_static_pad_template(element_class, &src_template);

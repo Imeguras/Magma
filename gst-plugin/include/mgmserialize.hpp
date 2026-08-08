@@ -19,11 +19,16 @@ G_DECLARE_FINAL_TYPE(GstMagmaSerialize, gst_magma_serialize, GST, MAGMA_SERIALIZ
  * Reads MagmaInferenceMeta and produces a text buffer containing
  * JSON or Protobuf-serialized detection results.
  *
- * @property format  Output format: "json" (default) or "protobuf"
+ * @property format            Output format: "json" (default) or "protobuf"
+ * @property max-mask-pixels   Cap on how many segmentation-mask floats are
+ *                             emitted per buffer (default 64). Raise it to dump
+ *                             whole masks when debugging a parser; a full set of
+ *                             N 160x160 instance masks needs N*25600.
  */
 struct _GstMagmaSerialize {
     GstBaseTransform parent;
     gchar* format;
+    guint  max_mask_pixels;
 };
 
 G_END_DECLS

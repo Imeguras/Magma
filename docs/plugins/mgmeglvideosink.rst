@@ -24,14 +24,14 @@ Pipeline examples
 
 Test with a colour-bar pattern::
 
-   gst-launch-1.0 videotestsrc pattern=18 ! \\
+   gst-launch-1.0 videotestsrc pattern=0 ! \\
        video/x-raw,format=NV12,width=640,height=480 ! \\
        mgmvideoconvert ! \\
-       mgmeglvideosink window-width=640 window-height=480 sync=false
+       mgmeglvideosink show-hud=false sync=false
 
-With debug HUD::
+With debug HUD (shows actual FPS, potential FPS and dropped frames)::
 
-   gst-launch-1.0 videotestsrc pattern=18 ! \\
+   gst-launch-1.0 videotestsrc pattern=0 ! \\
        video/x-raw,format=NV12,width=640,height=480 ! \\
        mgmvideoconvert ! \\
        mgmeglvideosink show-hud=true sync=false

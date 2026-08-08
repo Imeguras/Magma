@@ -317,6 +317,14 @@ static const unsigned int palette[] = {
     0xFFFF1493, 0xFF00BFFF, 0xFF98FB98, 0xFFDDA0DD,
 };
 
+/* The first float of a MagmaInferObjectGPU is really its guint class_id
+ * (written by the NMS kernel via __int_as_float), so read the bits. */
+static inline unsigned int magma_class_id_of(const float* obj) {
+    unsigned int cid;
+    memcpy(&cid, obj, sizeof(cid));
+    return cid;
+}
+
 struct LabelCache {
     char path[4096];
     time_t mtime;
@@ -386,6 +394,12 @@ static const char* yolo_lookup_label(unsigned int class_id,
     return NULL;
 }
 
+/* Mask silhouettes are emitted as a fixed-size polygon: MAGMA_SEG_COLS
+ * samples along the top edge, then the same columns back along the
+ * bottom edge.  Fixed size keeps the GPU buffers flat. */
+#define MAGMA_SEG_COLS  24
+#define MAGMA_SEG_VERTS (MAGMA_SEG_COLS * 2)
+
 struct MaskDecodeBuffers {
     int*        d_vertex;
     unsigned int* d_fill;
@@ -407,7 +421,7 @@ static int ensure_mask_decode_buffers(int max_detections) {
     g_mask_buf.capacity = 0;
 
     int cap = max_detections + 64;
-    if (hipMalloc(&g_mask_buf.d_vertex, (size_t)cap * 8 * sizeof(int)) != hipSuccess ||
+    if (hipMalloc(&g_mask_buf.d_vertex, (size_t)cap * MAGMA_SEG_VERTS * 2 * sizeof(int)) != hipSuccess ||
         hipMalloc(&g_mask_buf.d_fill,   (size_t)cap * sizeof(unsigned int)) != hipSuccess ||
         hipMalloc(&g_mask_buf.d_border, (size_t)cap * sizeof(unsigned int)) != hipSuccess ||
         hipMalloc(&g_mask_buf.d_count,  sizeof(int)) != hipSuccess) {
@@ -449,25 +463,44 @@ extern "C" __global__ void decode_masks_kernel(
     }
     if (min_r > max_r) return;
 
-    float sx = (float)roi_x + bx * (float)source_w;
-    float sy = (float)roi_y + by * (float)source_h;
-    float sw = bw * (float)source_w;
-    float sh = bh * (float)source_h;
+    /* The proto grid spans the whole model input, so mask pixels map
+     * directly onto the ROI — they are not relative to the box. */
+    float fw = roi_w > 0 ? (float)roi_w : (float)source_w;
+    float fh = roi_h > 0 ? (float)roi_h : (float)source_h;
 
-    float rx0 = (float)min_c / (float)mask_w, ry0 = (float)min_r / (float)mask_h;
-    float rx1 = (float)(max_c + 1) / (float)mask_w, ry1 = (float)(max_r + 1) / (float)mask_h;
-
-    int x0 = (int)(sx + rx0 * sw), y0 = (int)(sy + ry0 * sh);
-    int x1 = (int)(sx + rx1 * sw), y1 = (int)(sy + ry1 * sh);
-    if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
-    if (x1 < 0) x1 = 0; if (y1 < 0) y1 = 0;
+    int span = max_c - min_c + 1;
+    if (span < 2 || max_r - min_r < 2) return;
 
     int idx = atomicAdd(d_num_out, 1);
-    int* v = d_vertex_out + idx * 8;
-    v[0] = x0; v[1] = y0; v[2] = x1; v[3] = y0;
-    v[4] = x1; v[5] = y1; v[6] = x0; v[7] = y1;
+    int* v = d_vertex_out + idx * MAGMA_SEG_VERTS * 2;
 
-    unsigned int cid = (unsigned int)det[0];
+    /* Walk the mask column by column: the topmost and bottommost set
+     * pixel of each sampled column give the silhouette outline. */
+    for (int k = 0; k < MAGMA_SEG_COLS; k++) {
+        int c = min_c + (int)(((float)k + 0.5f) * (float)span / (float)MAGMA_SEG_COLS);
+        if (c > max_c) c = max_c;
+
+        int top = -1, bot = -1;
+        for (int r = min_r; r <= max_r; r++) {
+            /* logit > 0 is exactly sigmoid > 0.5 */
+            if (d_masks[(size_t)i * mask_pixels + (size_t)r * mask_w + c] > 0.0f) {
+                if (top < 0) top = r;
+                bot = r;
+            }
+        }
+        if (top < 0) { top = bot = (min_r + max_r) / 2; }
+
+        int px = (int)((float)roi_x + ((float)c + 0.5f) / (float)mask_w * fw);
+        int kb = MAGMA_SEG_VERTS - 1 - k;
+        v[k * 2 + 0]  = px;
+        v[k * 2 + 1]  = (int)((float)roi_y + (float)top / (float)mask_h * fh);
+        v[kb * 2 + 0] = px;
+        v[kb * 2 + 1] = (int)((float)roi_y + (float)(bot + 1) / (float)mask_h * fh);
+    }
+
+    /* MagmaInferObjectGPU.class_id is a guint — the NMS kernel stored it
+     * with __int_as_float, so it must be reinterpreted, not converted. */
+    unsigned int cid = (unsigned int)__float_as_int(det[0]);
     unsigned int color = palette[cid % 16];
     d_fill_out[idx]   = (color & 0xFFFFFF00) | 0x1A;
     d_border_out[idx] = color;
@@ -524,17 +557,17 @@ extern "C" int magma_to_primitives(
             if (num_generated > 0) {
                 if (num_generated > num) num_generated = num;
 
-                int* host_verts = (int*)malloc((size_t)num_generated * 8 * sizeof(int));
+                int* host_verts = (int*)malloc((size_t)num_generated * MAGMA_SEG_VERTS * 2 * sizeof(int));
                 unsigned int* host_fill = (unsigned int*)malloc((size_t)num_generated * sizeof(unsigned int));
                 unsigned int* host_border = (unsigned int*)malloc((size_t)num_generated * sizeof(unsigned int));
                 if (host_verts && host_fill && host_border) {
-                    (void)hipMemcpyDtoH(host_verts,   g_mask_buf.d_vertex, (size_t)num_generated * 8 * sizeof(int));
+                    (void)hipMemcpyDtoH(host_verts,   g_mask_buf.d_vertex, (size_t)num_generated * MAGMA_SEG_VERTS * 2 * sizeof(int));
                     (void)hipMemcpyDtoH(host_fill,    g_mask_buf.d_fill,   (size_t)num_generated * sizeof(unsigned int));
                     (void)hipMemcpyDtoH(host_border,  g_mask_buf.d_border, (size_t)num_generated * sizeof(unsigned int));
 
                     for (int gi = 0; gi < num_generated; gi++) {
                         magma_primitive_list_add_polygon(out,
-                            host_verts + gi * 8, 4,
+                            host_verts + gi * MAGMA_SEG_VERTS * 2, MAGMA_SEG_VERTS,
                             host_fill[gi], host_border[gi]);
                     }
                 }
@@ -544,7 +577,7 @@ extern "C" int magma_to_primitives(
 
                 for (int i = 0; i < num; i++) {
                     const float* o = (const float*)data + i * 6;
-                    unsigned int cid = (unsigned int)o[0];
+                    unsigned int cid = magma_class_id_of(o);
                     float score = o[1];
                     float x = o[2], y = o[3], w = o[4], h = o[5];
                     if (w < 0.001f || h < 0.001f) continue;
@@ -574,7 +607,7 @@ extern "C" int magma_to_primitives(
 
     for (int i = 0; i < num; i++) {
         const float* o = (const float*)data + i * 6;
-        unsigned int cid = (unsigned int)o[0];
+        unsigned int cid = magma_class_id_of(o);
         float score = o[1];
         float x = o[2];
         float y = o[3];

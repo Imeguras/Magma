@@ -204,6 +204,7 @@ mgmeglvideosink_shlib = shared_library('mgmeglvideosink',
 
 # Install kernel sources for runtime JIT loading on deployed systems
 install_data('kernels/preproc_kernels.hip', 'kernels/common.hip', 'kernels/dummy_infer.hip', 'kernels/osd_kernels.hip', 'kernels/osd_primitives_kernels.hip', 'kernels/videoconvert_kernels.hip',
+  'kernels/nv12_to_xrgb8888.hip', 'kernels/fps_overlay.hip',
   install_dir: get_option('datadir') / 'magma' / 'kernels',
 )
 

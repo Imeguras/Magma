@@ -34,13 +34,15 @@ __global__ void decode_filter_kernel(
     float w  = fmaxf(data[base + 2], 0.0f);
     float h  = fmaxf(data[base + 3], 0.0f);
 
+    /* Ultralytics YOLO-seg exports already apply sigmoid to the class
+     * channels (Detect._inference returns cat(dbox, cls.sigmoid())).
+     * Applying it a second time squashes every score into [0.5, 0.73]. */
     float max_score = -1e10f;
     int max_class = -1;
     for (int c = 0; c < num_classes; c++) {
         float s = data[base + 4 + c];
-        float sig = 1.0f / (1.0f + __expf(-s));
-        if (sig > max_score) {
-            max_score = sig;
+        if (s > max_score) {
+            max_score = s;
             max_class = c;
         }
     }
@@ -140,7 +142,21 @@ __global__ void nms_mask_kernel(
     int coeff_base = orig_idx * stride + 4 + num_classes;
     int mask_pixels = proto_h * proto_w;
 
+    /* Box in proto-mask coordinates — the proto basis spans the whole net
+     * input, so a detection's mask is only valid inside its own box
+     * (ultralytics crop_mask).  Everything outside is forced negative. */
+    int mx1 = (int)floorf(x1 * (float)proto_w / (float)net_w);
+    int my1 = (int)floorf(y1 * (float)proto_h / (float)net_h);
+    int mx2 = (int)ceilf(x2 * (float)proto_w / (float)net_w);
+    int my2 = (int)ceilf(y2 * (float)proto_h / (float)net_h);
+
     for (int p = 0; p < mask_pixels; p++) {
+        int r = p / proto_w;
+        int c0 = p - r * proto_w;
+        if (c0 < mx1 || c0 >= mx2 || r < my1 || r >= my2) {
+            d_masks[(size_t)idx * mask_pixels + p] = -1e10f;
+            continue;
+        }
         float sum = 0.0f;
         for (int c = 0; c < num_coeffs; c++) {
             sum += d_rowmajor[coeff_base + c] * d_proto[(size_t)c * mask_pixels + p];

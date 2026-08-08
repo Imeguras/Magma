@@ -272,8 +272,11 @@ static GstBuffer* create_output_buffer(
     GstMagmaH264Dec* self, RocVideoDecoder* roc_dec, uint8_t* y_ptr, uint8_t* uv_ptr, uint32_t pitch_y, uint32_t pitch_uv, int64_t pts, int width, int height, GstVideoFormat out_fmt) {
     gboolean is_i420 = (out_fmt == GST_VIDEO_FORMAT_I420);
     size_t y_size = (size_t)width * height;
+    /* Chroma is half-resolution in both axes. I420 stores two such planes (U, V);
+     * NV12 stores one interleaved UV plane of the same total size. Either way the
+     * chroma region is 2 * uv_size — the NV12 copy below writes width * (height/2). */
     size_t uv_size = (size_t)(width / 2) * (height / 2);
-    size_t frame_bytes = y_size + (is_i420 ? 2 * uv_size : uv_size);
+    size_t frame_bytes = y_size + 2 * uv_size;
 
     if (g_async_queue_length(self->pool_free) == 0) {
         for (int i = 0; i < FRAME_POOL_SIZE; i++) {
