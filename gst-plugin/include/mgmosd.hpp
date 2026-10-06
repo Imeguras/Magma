@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 João Vieira <joaodavid2001@gmail.com>
+// SPDX-License-Identifier: LGPL-3.0-or-later
+
 #pragma once
 
 #include <gst/gst.h>

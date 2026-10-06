@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 João Vieira <joaodavid2001@gmail.com>
+// SPDX-License-Identifier: LGPL-3.0-or-later
+
 // 6x8 bitmap font for FPS overlay
 // Indices: 0-9=digits, 10=F, 11=P, 12=S, 13=:, 14=., 15=(, 16=), 17=space
 // Each char: 8 rows, 6 columns per row, LSB=leftmost column, only bits 0-5 used

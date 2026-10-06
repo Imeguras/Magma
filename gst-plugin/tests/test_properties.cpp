@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 João Vieira <joaodavid2001@gmail.com>
+// SPDX-License-Identifier: LGPL-3.0-or-later
+
 #include <gst/gst.h>
 #include <cstdio>
 #include <cmath>
@@ -73,8 +76,8 @@ static void test_mgminfer_defaults(void) {
 		return;
 
 	gchar* model_path = NULL;
-	g_object_get(e, "model-path", &model_path, NULL);
-	TEST_ASSERT(model_path == NULL, "model-path should be NULL, got %s", model_path);
+	g_object_get(e, "model-onnx-file", &model_path, NULL);
+	TEST_ASSERT(model_path == NULL, "model-onnx-file should be NULL, got %s", model_path);
 	g_free(model_path);
 
 	guint interval;
@@ -91,9 +94,9 @@ static void test_mgminfer_set_model_path(void) {
 	if (!e)
 		return;
 
-	g_object_set(e, "model-path", "/some/model.onnx", NULL);
+	g_object_set(e, "model-onnx-file", "/some/model.onnx", NULL);
 	gchar* model_path = NULL;
-	g_object_get(e, "model-path", &model_path, NULL);
+	g_object_get(e, "model-onnx-file", &model_path, NULL);
 	TEST_ASSERT(g_strcmp0(model_path, "/some/model.onnx") == 0, "expected /some/model.onnx, got %s", model_path);
 	g_free(model_path);
 	gst_object_unref(e);

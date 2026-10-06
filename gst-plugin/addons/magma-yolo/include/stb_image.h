@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 João Vieira <joaodavid2001@gmail.com>
+// SPDX-License-Identifier: LGPL-3.0-or-later
+
 /* stb_image - v2.30 - public domain image loader - http://nothings.org/stb
                                   no warranty implied; use at your own risk
 

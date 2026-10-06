@@ -1,0 +1,21 @@
+name: License
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  reuse:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install reuse
+        run: pipx install reuse==6.2.0
+
+      - name: Check headers, license texts and copyright years
+        run: python3 scripts/check-license.py

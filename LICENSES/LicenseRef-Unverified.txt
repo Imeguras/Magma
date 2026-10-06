@@ -1,0 +1,3 @@
+The origin and license of the files marked with this identifier have not yet
+been verified. They are test/demo media only and are not part of the built
+plugins. Do not redistribute them separately until their license is confirmed.

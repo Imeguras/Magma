@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 João Vieira <joaodavid2001@gmail.com>
+// SPDX-License-Identifier: LGPL-3.0-or-later
+
 #define GST_CHECK_DISABLE_ASSERT_OVERRIDES
 #include <gst/check/gstcheck.h>
 #include <gst/video/video.h>
@@ -133,7 +136,9 @@ static GstBuffer* make_test_buffer(int w, int h, GstMemory* tensor_mem, gint t_w
 
 	GstBuffer* buf = gst_buffer_new();
 	gst_buffer_append_memory(buf, nv12_mem);
-	gst_buffer_add_video_meta_full(buf, GST_VIDEO_FRAME_FLAG_NONE, GST_VIDEO_FORMAT_NV12, w, h, 2, (gsize[]){0, (gsize)(stride * h)}, (gint[]){stride, stride});
+	gsize offsets[] = {0, (gsize)(stride * h)};
+	gint strides[] = {stride, stride};
+	gst_buffer_add_video_meta_full(buf, GST_VIDEO_FRAME_FLAG_NONE, GST_VIDEO_FORMAT_NV12, w, h, 2, offsets, strides);
 
 	if (tensor_mem)
 		so_add_tensor_meta(buf, tensor_mem, t_w, t_h, t_c);

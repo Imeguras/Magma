@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 João Vieira <joaodavid2001@gmail.com>
+// SPDX-License-Identifier: LGPL-3.0-or-later
+
 #define GST_CHECK_DISABLE_ASSERT_OVERRIDES
 #include <gst/check/gstcheck.h>
 #include <gst/video/video.h>
@@ -12,7 +15,9 @@
 
 static GstBuffer* make_buffer_with_inference_meta(guint num_objects, guint sw, guint sh) {
 	GstBuffer* buf = gst_buffer_new();
-	gst_buffer_add_video_meta_full(buf, GST_VIDEO_FRAME_FLAG_NONE, GST_VIDEO_FORMAT_NV12, sw, sh, 2, (gsize[]){0, (gsize)(sw * sh)}, (gint[]){sw, sw});
+	gsize offsets[] = {0, (gsize)(sw * sh)};
+	gint strides[] = {sw, sw};
+	gst_buffer_add_video_meta_full(buf, GST_VIDEO_FRAME_FLAG_NONE, GST_VIDEO_FORMAT_NV12, sw, sh, 2, offsets, strides);
 
 	MagmaInferenceMeta* m = magma_buffer_add_inference_meta(buf, sw, sh);
 	g_assert(m != NULL);
@@ -215,7 +220,9 @@ GST_START_TEST(test_serialize_no_meta) {
 
 	/* buffer without any inference meta */
 	GstBuffer* buf = gst_buffer_new();
-	gst_buffer_add_video_meta_full(buf, GST_VIDEO_FRAME_FLAG_NONE, GST_VIDEO_FORMAT_NV12, 64, 48, 2, (gsize[]){0, (gsize)(64 * 48)}, (gint[]){64, 64});
+	gsize offsets[] = {0, (gsize)(64 * 48)};
+	gint strides[] = {64, 64};
+	gst_buffer_add_video_meta_full(buf, GST_VIDEO_FRAME_FLAG_NONE, GST_VIDEO_FORMAT_NV12, 64, 48, 2, offsets, strides);
 
 	GstFlowReturn ret = gst_pad_push(push_pad, buf);
 	ck_assert_int_eq(ret, GST_FLOW_OK);

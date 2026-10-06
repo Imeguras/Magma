@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 João Vieira <joaodavid2001@gmail.com>
+// SPDX-License-Identifier: LGPL-3.0-or-later
+
 /**
  * @file parse.cpp
  * @brief Implementation of the magma_parse function for post-processing YOLOv8 model outputs.

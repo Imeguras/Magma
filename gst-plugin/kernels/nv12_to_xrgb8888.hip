@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 João Vieira <joaodavid2001@gmail.com>
+// SPDX-License-Identifier: LGPL-3.0-or-later
+
 extern "C" __global__ void nv12_to_xrgb8888(const unsigned char* y, int y_stride, const unsigned char* uv, int uv_stride, unsigned int* dst, int dst_stride_pixels, int w, int h) {
 	int x = blockIdx.x * blockDim.x + threadIdx.x;
 	int yp = blockIdx.y * blockDim.y + threadIdx.y;

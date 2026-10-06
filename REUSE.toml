@@ -1,0 +1,30 @@
+version = 1
+
+# Default: everything not carrying its own SPDX header (build files, scripts, docs, configs)
+[[annotations]]
+path = "**"
+precedence = "closest"
+SPDX-FileCopyrightText = "2026 João Vieira <joaodavid2001@gmail.com>"
+SPDX-License-Identifier = "LGPL-3.0-or-later"
+
+# Third-party: AMD rocDecode sample utilities (MIT, notice kept in-file)
+[[annotations]]
+path = ["gst-plugin/src/roc_video_dec.cpp", "gst-plugin/src/roc_video_dec.h"]
+precedence = "override"
+SPDX-FileCopyrightText = "2023-2025 Advanced Micro Devices, Inc."
+SPDX-License-Identifier = "MIT"
+
+# Third-party: COCO class names (COCO dataset annotations, CC-BY-4.0)
+[[annotations]]
+path = "gst-plugin/addons/**/coco.names"
+precedence = "override"
+SPDX-FileCopyrightText = "COCO Consortium"
+SPDX-License-Identifier = "CC-BY-4.0"
+
+# TODO: verify origin/license of test media and replace this placeholder
+[[annotations]]
+path = ["gst-plugin/tests/test_data/**", "assets/**"]
+precedence = "override"
+SPDX-FileCopyrightText = "Unverified third-party sources"
+SPDX-License-Identifier = "LicenseRef-Unverified"
+

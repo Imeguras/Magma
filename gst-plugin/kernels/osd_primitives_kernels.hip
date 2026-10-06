@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 João Vieira <joaodavid2001@gmail.com>
+// SPDX-License-Identifier: LGPL-3.0-or-later
+
 /* OSD primitive kernels — one kernel per primitive type.
  * Each kernel renders one type of primitive (rect, polyline, point, text, etc.)
  * onto an NV12 frame given a flat array of per-type parameters.
