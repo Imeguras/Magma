@@ -27,20 +27,20 @@ GST_DEBUG_CATEGORY_STATIC(magma_infer_debug);
 static gboolean gst_magma_infer_decide_allocation(GstBaseTransform* trans, GstQuery* query);
 
 enum {
-    PROP_0,
-    PROP_ONNX_MODEL_PATH,
-    PROP_MXR_MODEL_PATH,
-    PROP_INFERENCE_INTERVAL,
-    PROP_PARSER_PLUGIN,
-    PROP_PARSER_FUNC,
-    PROP_CONFIDENCE_THRESH,
-    PROP_NMS_THRESH,
-    PROP_MAX_DETECTIONS,
-    PROP_CLASS_FILTER,
-    PROP_CONFIG_FILE,
-    PROP_COMPILE_FUNC,
-    PROP_COMPILE_PRECISION,
-    PROP_CALIB_DATA_PATH,
+	PROP_0,
+	PROP_ONNX_MODEL_PATH,
+	PROP_MXR_MODEL_PATH,
+	PROP_INFERENCE_INTERVAL,
+	PROP_PARSER_PLUGIN,
+	PROP_PARSER_FUNC,
+	PROP_CONFIDENCE_THRESH,
+	PROP_NMS_THRESH,
+	PROP_MAX_DETECTIONS,
+	PROP_CLASS_FILTER,
+	PROP_CONFIG_FILE,
+	PROP_COMPILE_FUNC,
+	PROP_COMPILE_PRECISION,
+	PROP_CALIB_DATA_PATH,
 };
 
 G_DEFINE_TYPE(GstMagmaInfer, gst_magma_infer, GST_TYPE_BASE_TRANSFORM)
@@ -48,24 +48,24 @@ G_DEFINE_TYPE(GstMagmaInfer, gst_magma_infer, GST_TYPE_BASE_TRANSFORM)
 namespace {
 
 struct MigraphXModel {
-    migraphx::program prog;
-    std::string input_name;
-    migraphx::shape input_shape;
-    std::vector<std::size_t> input_lengths;
-    std::vector<std::pair<std::string, migraphx::shape>> all_params;
-    std::vector<hipDeviceptr_t> d_output_scratch;
-    int model_width;
-    int model_height;
+	migraphx::program prog;
+	std::string input_name;
+	migraphx::shape input_shape;
+	std::vector<std::size_t> input_lengths;
+	std::vector<std::pair<std::string, migraphx::shape>> all_params;
+	std::vector<hipDeviceptr_t> d_output_scratch;
+	int model_width;
+	int model_height;
 
-    MigraphXModel() : model_width(0), model_height(0) {
-    }
+	MigraphXModel() : model_width(0), model_height(0) {
+	}
 
-    ~MigraphXModel() {
-        for (auto p : d_output_scratch) {
-            if (p)
-                (void)hipFree(p);
-        }
-    }
+	~MigraphXModel() {
+		for (auto p : d_output_scratch) {
+			if (p)
+				(void)hipFree(p);
+		}
+	}
 };
 
 } // anonymous namespace
@@ -81,29 +81,29 @@ struct MigraphXModel {
  * @return TRUE on success
  */
 static gboolean ensure_objects_output(GstMagmaInfer* self) {
-    if (self->d_objects)
-        return TRUE;
+	if (self->d_objects)
+		return TRUE;
 
-    gsize bytes = self->max_objects * sizeof(MagmaInferObjectGPU);
+	gsize bytes = self->max_objects * sizeof(MagmaInferObjectGPU);
 
-    hipError_t herr = hipMalloc(&self->d_objects, bytes);
-    if (herr != hipSuccess) {
-        GST_ERROR_OBJECT(self, "hipMalloc(objects %zu) failed: %s", bytes, hipGetErrorString(herr));
-        return FALSE;
-    }
+	hipError_t herr = hipMalloc(&self->d_objects, bytes);
+	if (herr != hipSuccess) {
+		GST_ERROR_OBJECT(self, "hipMalloc(objects %zu) failed: %s", bytes, hipGetErrorString(herr));
+		return FALSE;
+	}
 
-    GST_INFO_OBJECT(self, "Objects hipMalloc (%zu bytes, max %u objects) ptr=%p", bytes, self->max_objects, (void*)self->d_objects);
+	GST_INFO_OBJECT(self, "Objects hipMalloc (%zu bytes, max %u objects) ptr=%p", bytes, self->max_objects, (void*)self->d_objects);
 
-    // GPU count buffer
-    if (!self->d_num_det) {
-        hipError_t e = hipMalloc(&self->d_num_det, sizeof(int));
-        if (e != hipSuccess) {
-            GST_ERROR_OBJECT(self, "hipMalloc(d_num_det) failed: %s", hipGetErrorString(e));
-            return FALSE;
-        }
-    }
+	// GPU count buffer
+	if (!self->d_num_det) {
+		hipError_t e = hipMalloc(&self->d_num_det, sizeof(int));
+		if (e != hipSuccess) {
+			GST_ERROR_OBJECT(self, "hipMalloc(d_num_det) failed: %s", hipGetErrorString(e));
+			return FALSE;
+		}
+	}
 
-    return TRUE;
+	return TRUE;
 }
 
 /** --- PAD TEMPLATES --- */
@@ -113,114 +113,114 @@ static GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE("src", GST_PA
 
 /** --- PROPERTIES --- */
 static void gst_magma_infer_set_property(GObject* object, guint prop_id, const GValue* value, GParamSpec* pspec) {
-    GstMagmaInfer* self = GST_MAGMA_INFER(object);
+	GstMagmaInfer* self = GST_MAGMA_INFER(object);
 
-    switch (prop_id) {
-    case PROP_ONNX_MODEL_PATH:
-        g_free(self->onnx_model_path);
-        self->onnx_model_path = g_value_dup_string(value);
-        GST_INFO_OBJECT(self, "ONNX model path set to %s", self->onnx_model_path);
-        break;
-    case PROP_MXR_MODEL_PATH:
-        g_free(self->mxr_model_path);
-        self->mxr_model_path = g_value_dup_string(value);
-        GST_INFO_OBJECT(self, "MXR model path set to %s", self->mxr_model_path);
-        break;
-    case PROP_INFERENCE_INTERVAL:
-        self->inference_interval = g_value_get_uint(value);
-        GST_INFO_OBJECT(self, "inference interval set to %u", self->inference_interval);
-        break;
-    case PROP_PARSER_PLUGIN:
-        g_free(self->parser_plugin_path);
-        self->parser_plugin_path = g_value_dup_string(value);
-        GST_INFO_OBJECT(self, "parser plugin set to %s", self->parser_plugin_path);
-        break;
-    case PROP_PARSER_FUNC:
-        g_free(self->parser_func_name);
-        self->parser_func_name = g_value_dup_string(value);
-        break;
-    case PROP_CONFIDENCE_THRESH:
-        self->confidence_thresh = g_value_get_float(value);
-        break;
-    case PROP_NMS_THRESH:
-        self->nms_thresh = g_value_get_float(value);
-        break;
-    case PROP_MAX_DETECTIONS:
-        self->max_detections = g_value_get_uint(value);
-        self->max_objects = self->max_detections;
-        break;
-    case PROP_CLASS_FILTER:
-        self->class_filter = g_value_get_int(value);
-        break;
-    case PROP_CONFIG_FILE:
-        g_free(self->config_file);
-        self->config_file = g_value_dup_string(value);
-        break;
-    case PROP_COMPILE_FUNC:
-        g_free(self->compile_func_name);
-        self->compile_func_name = g_value_dup_string(value);
-        break;
-    case PROP_COMPILE_PRECISION:
-        g_free(self->compile_precision);
-        self->compile_precision = g_value_dup_string(value);
-        break;
-    case PROP_CALIB_DATA_PATH:
-        g_free(self->calib_data_path);
-        self->calib_data_path = g_value_dup_string(value);
-        break;
-    default:
-        G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
-        break;
-    }
+	switch (prop_id) {
+	case PROP_ONNX_MODEL_PATH:
+		g_free(self->onnx_model_path);
+		self->onnx_model_path = g_value_dup_string(value);
+		GST_INFO_OBJECT(self, "ONNX model path set to %s", self->onnx_model_path);
+		break;
+	case PROP_MXR_MODEL_PATH:
+		g_free(self->mxr_model_path);
+		self->mxr_model_path = g_value_dup_string(value);
+		GST_INFO_OBJECT(self, "MXR model path set to %s", self->mxr_model_path);
+		break;
+	case PROP_INFERENCE_INTERVAL:
+		self->inference_interval = g_value_get_uint(value);
+		GST_INFO_OBJECT(self, "inference interval set to %u", self->inference_interval);
+		break;
+	case PROP_PARSER_PLUGIN:
+		g_free(self->parser_plugin_path);
+		self->parser_plugin_path = g_value_dup_string(value);
+		GST_INFO_OBJECT(self, "parser plugin set to %s", self->parser_plugin_path);
+		break;
+	case PROP_PARSER_FUNC:
+		g_free(self->parser_func_name);
+		self->parser_func_name = g_value_dup_string(value);
+		break;
+	case PROP_CONFIDENCE_THRESH:
+		self->confidence_thresh = g_value_get_float(value);
+		break;
+	case PROP_NMS_THRESH:
+		self->nms_thresh = g_value_get_float(value);
+		break;
+	case PROP_MAX_DETECTIONS:
+		self->max_detections = g_value_get_uint(value);
+		self->max_objects = self->max_detections;
+		break;
+	case PROP_CLASS_FILTER:
+		self->class_filter = g_value_get_int(value);
+		break;
+	case PROP_CONFIG_FILE:
+		g_free(self->config_file);
+		self->config_file = g_value_dup_string(value);
+		break;
+	case PROP_COMPILE_FUNC:
+		g_free(self->compile_func_name);
+		self->compile_func_name = g_value_dup_string(value);
+		break;
+	case PROP_COMPILE_PRECISION:
+		g_free(self->compile_precision);
+		self->compile_precision = g_value_dup_string(value);
+		break;
+	case PROP_CALIB_DATA_PATH:
+		g_free(self->calib_data_path);
+		self->calib_data_path = g_value_dup_string(value);
+		break;
+	default:
+		G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
+		break;
+	}
 }
 
 static void gst_magma_infer_get_property(GObject* object, guint prop_id, GValue* value, GParamSpec* pspec) {
-    GstMagmaInfer* self = GST_MAGMA_INFER(object);
+	GstMagmaInfer* self = GST_MAGMA_INFER(object);
 
-    switch (prop_id) {
-    case PROP_ONNX_MODEL_PATH:
-        g_value_set_string(value, self->onnx_model_path);
-        break;
-    case PROP_MXR_MODEL_PATH:
-        g_value_set_string(value, self->mxr_model_path);
-        break;
-    case PROP_INFERENCE_INTERVAL:
-        g_value_set_uint(value, self->inference_interval);
-        break;
-    case PROP_PARSER_PLUGIN:
-        g_value_set_string(value, self->parser_plugin_path);
-        break;
-    case PROP_PARSER_FUNC:
-        g_value_set_string(value, self->parser_func_name);
-        break;
-    case PROP_CONFIDENCE_THRESH:
-        g_value_set_float(value, self->confidence_thresh);
-        break;
-    case PROP_NMS_THRESH:
-        g_value_set_float(value, self->nms_thresh);
-        break;
-    case PROP_MAX_DETECTIONS:
-        g_value_set_uint(value, self->max_detections);
-        break;
-    case PROP_CLASS_FILTER:
-        g_value_set_int(value, self->class_filter);
-        break;
-    case PROP_CONFIG_FILE:
-        g_value_set_string(value, self->config_file);
-        break;
-    case PROP_COMPILE_FUNC:
-        g_value_set_string(value, self->compile_func_name);
-        break;
-    case PROP_COMPILE_PRECISION:
-        g_value_set_string(value, self->compile_precision);
-        break;
-    case PROP_CALIB_DATA_PATH:
-        g_value_set_string(value, self->calib_data_path);
-        break;
-    default:
-        G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
-        break;
-    }
+	switch (prop_id) {
+	case PROP_ONNX_MODEL_PATH:
+		g_value_set_string(value, self->onnx_model_path);
+		break;
+	case PROP_MXR_MODEL_PATH:
+		g_value_set_string(value, self->mxr_model_path);
+		break;
+	case PROP_INFERENCE_INTERVAL:
+		g_value_set_uint(value, self->inference_interval);
+		break;
+	case PROP_PARSER_PLUGIN:
+		g_value_set_string(value, self->parser_plugin_path);
+		break;
+	case PROP_PARSER_FUNC:
+		g_value_set_string(value, self->parser_func_name);
+		break;
+	case PROP_CONFIDENCE_THRESH:
+		g_value_set_float(value, self->confidence_thresh);
+		break;
+	case PROP_NMS_THRESH:
+		g_value_set_float(value, self->nms_thresh);
+		break;
+	case PROP_MAX_DETECTIONS:
+		g_value_set_uint(value, self->max_detections);
+		break;
+	case PROP_CLASS_FILTER:
+		g_value_set_int(value, self->class_filter);
+		break;
+	case PROP_CONFIG_FILE:
+		g_value_set_string(value, self->config_file);
+		break;
+	case PROP_COMPILE_FUNC:
+		g_value_set_string(value, self->compile_func_name);
+		break;
+	case PROP_COMPILE_PRECISION:
+		g_value_set_string(value, self->compile_precision);
+		break;
+	case PROP_CALIB_DATA_PATH:
+		g_value_set_string(value, self->calib_data_path);
+		break;
+	default:
+		G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
+		break;
+	}
 }
 
 /**
@@ -230,66 +230,66 @@ static void gst_magma_infer_get_property(GObject* object, guint prop_id, GValue*
  *
  */
 static void gst_magma_infer_finalize(GObject* object) {
-    GstMagmaInfer* self = GST_MAGMA_INFER(object);
+	GstMagmaInfer* self = GST_MAGMA_INFER(object);
 
-    if (self->d_objects) {
-        (void)hipFree(self->d_objects);
-        self->d_objects = nullptr;
-    }
+	if (self->d_objects) {
+		(void)hipFree(self->d_objects);
+		self->d_objects = nullptr;
+	}
 
-    if (self->d_num_det) {
-        hipError_t e = hipFree(self->d_num_det);
-        if (e != hipSuccess)
-            GST_WARNING_OBJECT(self, "hipFree(d_num_det) failed: %s", hipGetErrorString(e));
-        self->d_num_det = nullptr;
-    }
-    if (self->d_masks_buffer) {
-        (void)hipFree(self->d_masks_buffer);
-        self->d_masks_buffer = nullptr;
-        self->d_masks_buffer_bytes = 0;
-    }
+	if (self->d_num_det) {
+		hipError_t e = hipFree(self->d_num_det);
+		if (e != hipSuccess)
+			GST_WARNING_OBJECT(self, "hipFree(d_num_det) failed: %s", hipGetErrorString(e));
+		self->d_num_det = nullptr;
+	}
+	if (self->d_masks_buffer) {
+		(void)hipFree(self->d_masks_buffer);
+		self->d_masks_buffer = nullptr;
+		self->d_masks_buffer_bytes = 0;
+	}
 
-    if (self->cached_tensor_ext) {
-        (void)hipDestroyExternalMemory(self->cached_tensor_ext);
-        self->cached_tensor_ext = nullptr;
-    }
-    self->cached_tensor_dptr = 0;
-    self->cached_tensor_mem = NULL;
+	if (self->cached_tensor_ext) {
+		(void)hipDestroyExternalMemory(self->cached_tensor_ext);
+		self->cached_tensor_ext = nullptr;
+	}
+	self->cached_tensor_dptr = 0;
+	self->cached_tensor_mem = NULL;
 
-    if (self->migraphx_model) {
-        delete static_cast<MigraphXModel*>(self->migraphx_model);
-        self->migraphx_model = nullptr;
-    }
+	if (self->migraphx_model) {
+		delete static_cast<MigraphXModel*>(self->migraphx_model);
+		self->migraphx_model = nullptr;
+	}
 
-    if (self->parser_handle) {
-        dlclose(self->parser_handle);
-        self->parser_handle = nullptr;
-    }
-    self->parser_func = nullptr;
-    if (self->mxr_model_path) {
-        g_free(self->mxr_model_path);
-        self->mxr_model_path = NULL;
-    }
-    if (self->onnx_model_path) {
-        g_free(self->onnx_model_path);
-        self->onnx_model_path = NULL;
-    }
-    g_free(self->parser_plugin_path);
-    self->parser_plugin_path = NULL;
-    g_free(self->parser_func_name);
-    self->parser_func_name = NULL;
-    g_free(self->compile_func_name);
-    self->compile_func_name = NULL;
-    g_free(self->semantic_type_str);
-    self->semantic_type_str = NULL;
-    g_free(self->compile_precision);
-    self->compile_precision = NULL;
-    g_free(self->calib_data_path);
-    self->calib_data_path = NULL;
-    g_free(self->config_file);
-    self->config_file = NULL;
+	if (self->parser_handle) {
+		dlclose(self->parser_handle);
+		self->parser_handle = nullptr;
+	}
+	self->parser_func = nullptr;
+	if (self->mxr_model_path) {
+		g_free(self->mxr_model_path);
+		self->mxr_model_path = NULL;
+	}
+	if (self->onnx_model_path) {
+		g_free(self->onnx_model_path);
+		self->onnx_model_path = NULL;
+	}
+	g_free(self->parser_plugin_path);
+	self->parser_plugin_path = NULL;
+	g_free(self->parser_func_name);
+	self->parser_func_name = NULL;
+	g_free(self->compile_func_name);
+	self->compile_func_name = NULL;
+	g_free(self->semantic_type_str);
+	self->semantic_type_str = NULL;
+	g_free(self->compile_precision);
+	self->compile_precision = NULL;
+	g_free(self->calib_data_path);
+	self->calib_data_path = NULL;
+	g_free(self->config_file);
+	self->config_file = NULL;
 
-    G_OBJECT_CLASS(gst_magma_infer_parent_class)->finalize(object);
+	G_OBJECT_CLASS(gst_magma_infer_parent_class)->finalize(object);
 }
 // this should be split up so its easier to read but im too lazy and with c like functions its always annoying
 /**
@@ -300,363 +300,372 @@ static void gst_magma_infer_finalize(GObject* object) {
  *
  */
 static gboolean gst_magma_infer_start(GstBaseTransform* trans) {
-    GstMagmaInfer* self = GST_MAGMA_INFER(trans);
-    GST_DEBUG_OBJECT(self,
-                     "mgminfer start() called, mxr_model_path=%s onnx_model_path=%s parser=%s\n",
-                     self->mxr_model_path ? self->mxr_model_path : "(null)",
-                     self->onnx_model_path ? self->onnx_model_path : "(null)",
-                     self->parser_plugin_path ? self->parser_plugin_path : "(null)");
+	GstMagmaInfer* self = GST_MAGMA_INFER(trans);
+	GST_DEBUG_OBJECT(self,
+	                 "mgminfer start() called, mxr_model_path=%s onnx_model_path=%s parser=%s\n",
+	                 self->mxr_model_path ? self->mxr_model_path : "(null)",
+	                 self->onnx_model_path ? self->onnx_model_path : "(null)",
+	                 self->parser_plugin_path ? self->parser_plugin_path : "(null)");
 
-    /* Load config file if provided — overrides any props set before start */
-    if (self->config_file && self->config_file[0]) {
-        magma::Config cfg;
-        if (cfg.load(self->config_file))
-            cfg.apply(GST_ELEMENT(self), "mgminfer");
-    }
+	/* Load config file if provided — overrides any props set before start */
+	if (self->config_file && self->config_file[0]) {
+		magma::Config cfg;
+		if (cfg.load(self->config_file))
+			cfg.apply(GST_ELEMENT(self), "mgminfer");
+	}
 
-    if (!self->mxr_model_path && !self->onnx_model_path) {
-        GST_ERROR_OBJECT(self, "Neither mxr-model-path nor onnx-model-path was provided. At least one is required.");
-        return FALSE;
-    }
+	if (!self->mxr_model_path && !self->onnx_model_path) {
+		GST_ERROR_OBJECT(self, "Neither mxr-model-path nor onnx-model-path was provided. At least one is required.");
+		return FALSE;
+	}
 
-    std::string mxr_path = self->mxr_model_path ? std::string(self->mxr_model_path) : std::string();
-    std::string onnx_path = self->onnx_model_path ? std::string(self->onnx_model_path) : std::string();
+	std::string mxr_path = self->mxr_model_path ? std::string(self->mxr_model_path) : std::string();
+	std::string onnx_path = self->onnx_model_path ? std::string(self->onnx_model_path) : std::string();
 
-    // Determine the ultimate file path we intend to save the compiled model to
-    std::string target_mxr_save_path = mxr_path;
-    if (target_mxr_save_path.empty() && !onnx_path.empty()) {
-        target_mxr_save_path = onnx_path.substr(0, onnx_path.size() - 5) + ".mxr";
-    }
+	// Determine the ultimate file path we intend to save the compiled model to
+	std::string target_mxr_save_path = mxr_path;
+	if (target_mxr_save_path.empty() && !onnx_path.empty()) {
+		target_mxr_save_path = onnx_path.substr(0, onnx_path.size() - 5) + ".mxr";
+	}
 
-    /* Load parser plugin early — look for magma_compile hook before model compilation */
-    if (self->parser_plugin_path && !self->parser_handle) {
-        GST_INFO_OBJECT(self, "loading addon plugin: %s", self->parser_plugin_path);
-        self->parser_handle = dlopen(self->parser_plugin_path, RTLD_NOW | RTLD_LOCAL);
-        if (!self->parser_handle) {
-            GST_ERROR_OBJECT(self, "failed to load addon plugin '%s': %s", self->parser_plugin_path, dlerror());
-            return FALSE;
-        }
+	/* Load parser plugin early — look for magma_compile hook before model compilation */
+	if (self->parser_plugin_path && !self->parser_handle) {
+		GST_INFO_OBJECT(self, "loading addon plugin: %s", self->parser_plugin_path);
+		self->parser_handle = dlopen(self->parser_plugin_path, RTLD_NOW | RTLD_LOCAL);
+		if (!self->parser_handle) {
+			GST_ERROR_OBJECT(self, "failed to load addon plugin '%s': %s", self->parser_plugin_path, dlerror());
+			return FALSE;
+		}
 
-        /* optional compile hook */
-        self->compile_func = (MagmaCompileFunc)dlsym(self->parser_handle, self->compile_func_name);
-        if (self->compile_func) {
-            GST_INFO_OBJECT(self, "addon exports '%s' (%p) — will use for model compilation", self->compile_func_name, (void*)self->compile_func);
-        } else {
-            GST_INFO_OBJECT(self, "addon does not export '%s' — will use default compilation", self->compile_func_name);
-        }
+		/* optional compile hook */
+		self->compile_func = (MagmaCompileFunc)dlsym(self->parser_handle, self->compile_func_name);
+		if (self->compile_func) {
+			GST_INFO_OBJECT(self, "addon exports '%s' (%p) — will use for model compilation", self->compile_func_name, (void*)self->compile_func);
+		} else {
+			GST_INFO_OBJECT(self, "addon does not export '%s' — will use default compilation", self->compile_func_name);
+		}
 
-        /* required parse hook */
-        self->parser_func = (MagmaParseFunc)dlsym(self->parser_handle, self->parser_func_name);
-        if (!self->parser_func) {
-            GST_ERROR_OBJECT(self, "symbol '%s' not found in parser plugin: %s", self->parser_func_name, dlerror());
-            dlclose(self->parser_handle);
-            self->parser_handle = nullptr;
-            return FALSE;
-        }
+		/* required parse hook */
+		self->parser_func = (MagmaParseFunc)dlsym(self->parser_handle, self->parser_func_name);
+		if (!self->parser_func) {
+			GST_ERROR_OBJECT(self, "symbol '%s' not found in parser plugin: %s", self->parser_func_name, dlerror());
+			dlclose(self->parser_handle);
+			self->parser_handle = nullptr;
+			return FALSE;
+		}
 
-        /* optional to_primitives hook (model-agnostic rendering) */
-        self->to_primitives_func = (MagmaToPrimitivesFunc)dlsym(self->parser_handle, "magma_to_primitives");
-        if (self->to_primitives_func) {
-            const char* st = (const char*)dlsym(self->parser_handle, "magma_semantic_type");
-            g_free(self->semantic_type_str);
-            self->semantic_type_str = g_strdup(st ? st : "magma.detection.v1");
-            magma_register_to_primitives(self->semantic_type_str, self->to_primitives_func);
-            GST_INFO_OBJECT(self, "addon exports magma_to_primitives (%p) for type '%s'",
-                            (void*)self->to_primitives_func, self->semantic_type_str);
-            self->to_primitives_exported = TRUE;
-        } else {
-            GST_INFO_OBJECT(self, "addon does not export magma_to_primitives"
-                                  " — will use default converter if applicable");
-        }
+		/* optional to_primitives hook (model-agnostic rendering) */
+		self->to_primitives_func = (MagmaToPrimitivesFunc)dlsym(self->parser_handle, "magma_to_primitives");
+		if (self->to_primitives_func) {
+			const char* st = (const char*)dlsym(self->parser_handle, "magma_semantic_type");
+			g_free(self->semantic_type_str);
+			self->semantic_type_str = g_strdup(st ? st : "magma.detection.v1");
+			magma_register_to_primitives(self->semantic_type_str, self->to_primitives_func);
+			GST_INFO_OBJECT(self, "addon exports magma_to_primitives (%p) for type '%s'", (void*)self->to_primitives_func, self->semantic_type_str);
+			self->to_primitives_exported = TRUE;
+		} else {
+			GST_INFO_OBJECT(self,
+			                "addon does not export magma_to_primitives"
+			                " — will use default converter if applicable");
+		}
 
-        GST_INFO_OBJECT(self, "loaded addon plugin '%s' → %s (%p), %s (%p)%s%s",
-                        self->parser_plugin_path,
-                        self->compile_func_name, (void*)self->compile_func,
-                        self->parser_func_name, (void*)self->parser_func,
-                        self->to_primitives_func ? ", to_primitives=yes" : "",
-                        self->semantic_type_str ? "" : "");
-    }
+		GST_INFO_OBJECT(self,
+		                "loaded addon plugin '%s' → %s (%p), %s (%p)%s%s",
+		                self->parser_plugin_path,
+		                self->compile_func_name,
+		                (void*)self->compile_func,
+		                self->parser_func_name,
+		                (void*)self->parser_func,
+		                self->to_primitives_func ? ", to_primitives=yes" : "",
+		                self->semantic_type_str ? "" : "");
+	}
 
-    auto model = std::make_unique<MigraphXModel>();
-    bool model_loaded = false;
+	auto model = std::make_unique<MigraphXModel>();
+	bool model_loaded = false;
 
-    if (!mxr_path.empty()) {
-        try {
-            GST_INFO_OBJECT(self, "Attempting to load pre-compiled MIGraphX model from %s", mxr_path.c_str());
-            model->prog = migraphx::load(mxr_path.c_str());
-            GST_INFO_OBJECT(self, "Successfully loaded pre-compiled MIGraphX model from %s", mxr_path.c_str());
-            model_loaded = true;
-        } catch (const std::exception& e) {
-            GST_WARNING_OBJECT(self, "Failed to load pre-compiled model from %s (Error: %s).", mxr_path.c_str(), e.what());
-            if (onnx_path.empty()) {
-                GST_ERROR_OBJECT(self, "No .onnx fallback provided. Cannot recover.");
-                return FALSE;
-            }
-            GST_INFO_OBJECT(self, "Falling back to compiling from ONNX...");
-        }
-    }
+	if (!mxr_path.empty()) {
+		try {
+			GST_INFO_OBJECT(self, "Attempting to load pre-compiled MIGraphX model from %s", mxr_path.c_str());
+			model->prog = migraphx::load(mxr_path.c_str());
+			GST_INFO_OBJECT(self, "Successfully loaded pre-compiled MIGraphX model from %s", mxr_path.c_str());
+			model_loaded = true;
+		} catch (const std::exception& e) {
+			GST_WARNING_OBJECT(self, "Failed to load pre-compiled model from %s (Error: %s).", mxr_path.c_str(), e.what());
+			// Surface this on stderr too: a stale or version-mismatched .mxr is
+			// otherwise invisible under gst-launch, which hides the debug log.
+			fprintf(stderr, "MAGMA_ERR: could not load .mxr '%s': %s\n", mxr_path.c_str(), e.what());
+			if (onnx_path.empty()) {
+				GST_ERROR_OBJECT(self, "No .onnx fallback provided. Cannot recover.");
+				fprintf(stderr, "MAGMA_ERR: no model-onnx-file fallback given; mgminfer cannot start.\n");
+				return FALSE;
+			}
+			GST_INFO_OBJECT(self, "Falling back to compiling from ONNX...");
+			fprintf(stderr, "MAGMA_ERR: falling back to compiling from ONNX '%s' (this is slow).\n", onnx_path.c_str());
+		}
+	}
 
-    // Compile from ONNX if no pre-compiled MXR was loaded.
-    if (!model_loaded) {
-        if (onnx_path.empty()) {
-            GST_ERROR_OBJECT(self, "Could not load .mxr model and no fallback .onnx path was provided.");
-            return FALSE;
-        }
+	// Compile from ONNX if no pre-compiled MXR was loaded.
+	if (!model_loaded) {
+		if (onnx_path.empty()) {
+			GST_ERROR_OBJECT(self, "Could not load .mxr model and no fallback .onnx path was provided.");
+			return FALSE;
+		}
 
-        /* If the addon provides a compile hook, delegate to it */
-        if (self->compile_func) {
-            GST_INFO_OBJECT(self, "Delegating model compilation to addon's %s ...", self->compile_func_name);
+		/* If the addon provides a compile hook, delegate to it */
+		if (self->compile_func) {
+			GST_INFO_OBJECT(self, "Delegating model compilation to addon's %s ...", self->compile_func_name);
 
-            MagmaCompileParams params{};
-            params.onnx_path = onnx_path.c_str();
-            params.mxr_output_path = target_mxr_save_path.c_str();
-            params.device_id = 0;
-            params.precision = self->compile_precision ? self->compile_precision : "FP32";
-            params.calib_data_path = self->calib_data_path;
-            params.batch_size = 1;
-            params.extras = NULL;
+			MagmaCompileParams params{};
+			params.onnx_path = onnx_path.c_str();
+			params.mxr_output_path = target_mxr_save_path.c_str();
+			params.device_id = 0;
+			params.precision = self->compile_precision ? self->compile_precision : "FP32";
+			params.calib_data_path = self->calib_data_path;
+			params.batch_size = 1;
+			params.extras = NULL;
 
-            int ret = self->compile_func(&params);
+			int ret = self->compile_func(&params);
 
-            if (ret != 0) {
-                GST_ERROR_OBJECT(self, "addon's %s failed (%d) — falling back to default compilation", self->compile_func_name, ret);
-            } else {
-                try {
-                    model->prog = migraphx::load(target_mxr_save_path.c_str());
-                    model_loaded = true;
-                    GST_INFO_OBJECT(self, "Loaded model compiled by addon from %s", target_mxr_save_path.c_str());
-                } catch (const std::exception& e) {
-                    GST_WARNING_OBJECT(self, "Addon compiled but failed to load MXR: %s — falling back", e.what());
-                }
-            }
-        }
+			if (ret != 0) {
+				GST_ERROR_OBJECT(self, "addon's %s failed (%d) — falling back to default compilation", self->compile_func_name, ret);
+			} else {
+				try {
+					model->prog = migraphx::load(target_mxr_save_path.c_str());
+					model_loaded = true;
+					GST_INFO_OBJECT(self, "Loaded model compiled by addon from %s", target_mxr_save_path.c_str());
+				} catch (const std::exception& e) {
+					GST_WARNING_OBJECT(self, "Addon compiled but failed to load MXR: %s — falling back", e.what());
+				}
+			}
+		}
 
-        /* Fallback: default MIGraphX compilation (no addon hook, or hook failed) */
-        if (!model_loaded) {
-            try {
-                GST_INFO_OBJECT(self, "Parsing ONNX model from %s...", onnx_path.c_str());
-                auto prog_tmp = migraphx::parse_onnx(onnx_path.c_str());
+		/* Fallback: default MIGraphX compilation (no addon hook, or hook failed) */
+		if (!model_loaded) {
+			try {
+				GST_INFO_OBJECT(self, "Parsing ONNX model from %s...", onnx_path.c_str());
+				auto prog_tmp = migraphx::parse_onnx(onnx_path.c_str());
 
-                GST_INFO_OBJECT(self, "Compiling ONNX model for GPU target...");
-                migraphx::compile_options copts;
-                prog_tmp.compile(migraphx::target("gpu"), copts);
+				GST_INFO_OBJECT(self, "Compiling ONNX model for GPU target...");
+				migraphx::compile_options copts;
+				prog_tmp.compile(migraphx::target("gpu"), copts);
 
-                model->prog = std::move(prog_tmp);
-                model_loaded = true;
+				model->prog = std::move(prog_tmp);
+				model_loaded = true;
 
-                try {
-                    GST_INFO_OBJECT(self, "Saving compiled MIGraphX model to %s", target_mxr_save_path.c_str());
-                    migraphx::save(model->prog, target_mxr_save_path.c_str());
-                    GST_INFO_OBJECT(self, "Saved compiled model successfully.");
-                } catch (const std::exception& save_ex) {
-                    GST_WARNING_OBJECT(self, "Model compiled but failed to save to disk: %s", save_ex.what());
-                }
+				try {
+					GST_INFO_OBJECT(self, "Saving compiled MIGraphX model to %s", target_mxr_save_path.c_str());
+					migraphx::save(model->prog, target_mxr_save_path.c_str());
+					GST_INFO_OBJECT(self, "Saved compiled model successfully.");
+				} catch (const std::exception& save_ex) {
+					GST_WARNING_OBJECT(self, "Model compiled but failed to save to disk: %s", save_ex.what());
+				}
 
-            } catch (const std::exception& e) {
-                GST_ERROR_OBJECT(self, "MIGraphX ONNX parsing/compilation failed: %s", e.what());
-                return FALSE;
-            }
-        }
-    }
+			} catch (const std::exception& e) {
+				GST_ERROR_OBJECT(self, "MIGraphX ONNX parsing/compilation failed: %s", e.what());
+				return FALSE;
+			}
+		}
+	}
 
-    /* extract parameter info — find the real input (skip internal params like main:#...) */
-    auto param_shapes = model->prog.get_parameter_shapes();
-    auto names = param_shapes.names();
-    if (names.empty()) {
-        GST_ERROR_OBJECT(self, "MIGraphX model has no parameters");
-        return FALSE;
-    }
+	/* extract parameter info — find the real input (skip internal params like main:#...) */
+	auto param_shapes = model->prog.get_parameter_shapes();
+	auto names = param_shapes.names();
+	if (names.empty()) {
+		GST_ERROR_OBJECT(self, "MIGraphX model has no parameters");
+		return FALSE;
+	}
 
-    model->input_name.clear();
-    model->all_params.clear();
+	model->input_name.clear();
+	model->all_params.clear();
 
-    for (auto& n : names) {
-        auto s = param_shapes[n];
-        model->all_params.emplace_back(n, s);
-        /* real input param — not synthetic (synthetic has main:# prefix) */
-        if (n[0] != 'm' || strncmp(n, "main:#", 6) != 0) {
-            if (model->input_name.empty()) {
-                model->input_name = n;
-                model->input_shape = s;
-                model->input_lengths = s.lengths();
-                if (model->input_lengths.size() >= 4) {
-                    model->model_width = (int)model->input_lengths[3];
-                    model->model_height = (int)model->input_lengths[2];
-                } else if (model->input_lengths.size() == 3) {
-                    model->model_width = (int)model->input_lengths[2];
-                    model->model_height = (int)model->input_lengths[1];
-                }
-            }
-        }
-    }
+	for (auto& n : names) {
+		auto s = param_shapes[n];
+		model->all_params.emplace_back(n, s);
+		/* real input param — not synthetic (synthetic has main:# prefix) */
+		if (n[0] != 'm' || strncmp(n, "main:#", 6) != 0) {
+			if (model->input_name.empty()) {
+				model->input_name = n;
+				model->input_shape = s;
+				model->input_lengths = s.lengths();
+				if (model->input_lengths.size() >= 4) {
+					model->model_width = (int)model->input_lengths[3];
+					model->model_height = (int)model->input_lengths[2];
+				} else if (model->input_lengths.size() == 3) {
+					model->model_width = (int)model->input_lengths[2];
+					model->model_height = (int)model->input_lengths[1];
+				}
+			}
+		}
+	}
 
-    if (model->input_name.empty()) {
-        GST_ERROR_OBJECT(self, "could not identify input parameter");
-        return FALSE;
-    }
+	if (model->input_name.empty()) {
+		GST_ERROR_OBJECT(self, "could not identify input parameter");
+		return FALSE;
+	}
 
-    /* pre-allocate GPU scratch for each output param separately */
-    for (auto& [n, s] : model->all_params) {
-        if (n == model->input_name) continue;
-        hipDeviceptr_t buf = nullptr;
-        hipError_t err = hipMalloc(&buf, s.bytes());
-        if (err != hipSuccess) {
-            GST_ERROR_OBJECT(self, "hipMalloc(%s %zu) failed: %s", n.c_str(), s.bytes(), hipGetErrorString(err));
-            return FALSE;
-        }
-        model->d_output_scratch.push_back(buf);
-        GST_INFO_OBJECT(self, "allocated %zu bytes GPU for output param '%s'", s.bytes(), n.c_str());
-    }
+	/* pre-allocate GPU scratch for each output param separately */
+	for (auto& [n, s] : model->all_params) {
+		if (n == model->input_name)
+			continue;
+		hipDeviceptr_t buf = nullptr;
+		hipError_t err = hipMalloc(&buf, s.bytes());
+		if (err != hipSuccess) {
+			GST_ERROR_OBJECT(self, "hipMalloc(%s %zu) failed: %s", n.c_str(), s.bytes(), hipGetErrorString(err));
+			return FALSE;
+		}
+		model->d_output_scratch.push_back(buf);
+		GST_INFO_OBJECT(self, "allocated %zu bytes GPU for output param '%s'", s.bytes(), n.c_str());
+	}
 
-    self->migraphx_model = model.release();
-    self->model_loaded = TRUE;
-    GST_INFO_OBJECT(self,
-                    "MIGraphX model ready — input '%s' (%zu dims), %zu total params",
-                    static_cast<MigraphXModel*>(self->migraphx_model)->input_name.c_str(),
-                    static_cast<MigraphXModel*>(self->migraphx_model)->input_lengths.size(),
-                    static_cast<MigraphXModel*>(self->migraphx_model)->all_params.size());
+	self->migraphx_model = model.release();
+	self->model_loaded = TRUE;
+	GST_INFO_OBJECT(self,
+	                "MIGraphX model ready — input '%s' (%zu dims), %zu total params",
+	                static_cast<MigraphXModel*>(self->migraphx_model)->input_name.c_str(),
+	                static_cast<MigraphXModel*>(self->migraphx_model)->input_lengths.size(),
+	                static_cast<MigraphXModel*>(self->migraphx_model)->all_params.size());
 
-    return TRUE;
+	return TRUE;
 }
 
 /** --- STOP (READY → NULL) --- */
 static gboolean gst_magma_infer_stop(GstBaseTransform* trans) {
-    GstMagmaInfer* self = GST_MAGMA_INFER(trans);
+	GstMagmaInfer* self = GST_MAGMA_INFER(trans);
 
-    if (self->migraphx_model) {
-        delete static_cast<MigraphXModel*>(self->migraphx_model);
-        self->migraphx_model = nullptr;
-    }
-    GST_INFO_OBJECT(self, "MIGraphX model unloaded");
+	if (self->migraphx_model) {
+		delete static_cast<MigraphXModel*>(self->migraphx_model);
+		self->migraphx_model = nullptr;
+	}
+	GST_INFO_OBJECT(self, "MIGraphX model unloaded");
 
-    /* destroy cached tensor DMABuf import */
-    if (self->cached_tensor_ext) {
-        (void)hipDestroyExternalMemory(self->cached_tensor_ext);
-        self->cached_tensor_ext = nullptr;
-    }
-    self->cached_tensor_dptr = 0;
-    self->cached_tensor_mem = NULL;
+	/* destroy cached tensor DMABuf import */
+	if (self->cached_tensor_ext) {
+		(void)hipDestroyExternalMemory(self->cached_tensor_ext);
+		self->cached_tensor_ext = nullptr;
+	}
+	self->cached_tensor_dptr = 0;
+	self->cached_tensor_mem = NULL;
 
-    if (self->parser_handle) {
-        dlclose(self->parser_handle);
-        self->parser_handle = nullptr;
-        self->parser_func = nullptr;
-        GST_INFO_OBJECT(self, "parser plugin unloaded");
-    }
+	if (self->parser_handle) {
+		dlclose(self->parser_handle);
+		self->parser_handle = nullptr;
+		self->parser_func = nullptr;
+		GST_INFO_OBJECT(self, "parser plugin unloaded");
+	}
 
-    self->model_loaded = FALSE;
+	self->model_loaded = FALSE;
 
-    return TRUE;
+	return TRUE;
 }
 
 /** --- INIT --- */
 static void gst_magma_infer_init(GstMagmaInfer* self) {
-    self->onnx_model_path = NULL;
-    self->mxr_model_path = NULL;
-    self->inference_interval = 1;
-    self->frame_counter = 0;
-    self->in_width = 0;
-    self->in_height = 0;
+	self->onnx_model_path = NULL;
+	self->mxr_model_path = NULL;
+	self->inference_interval = 1;
+	self->frame_counter = 0;
+	self->in_width = 0;
+	self->in_height = 0;
 
-    self->d_objects = nullptr;
-    self->max_objects = 100;
+	self->d_objects = nullptr;
+	self->max_objects = 100;
 
-    self->d_num_det = nullptr;
+	self->d_num_det = nullptr;
 
-    self->d_masks_buffer = nullptr;
-    self->d_masks_buffer_bytes = 0;
-    self->d_masks_h = 0;
-    self->d_masks_w = 0;
+	self->d_masks_buffer = nullptr;
+	self->d_masks_buffer_bytes = 0;
+	self->d_masks_h = 0;
+	self->d_masks_w = 0;
 
-    self->hip_stream = nullptr;
+	self->hip_stream = nullptr;
 
-    self->migraphx_model = nullptr;
-    self->model_loaded = FALSE;
+	self->migraphx_model = nullptr;
+	self->model_loaded = FALSE;
 
-    self->parser_plugin_path = NULL;
-    self->parser_func_name = g_strdup("magma_parse");
-    self->parser_handle = nullptr;
-    self->parser_func = nullptr;
+	self->parser_plugin_path = NULL;
+	self->parser_func_name = g_strdup("magma_parse");
+	self->parser_handle = nullptr;
+	self->parser_func = nullptr;
 
-    self->compile_func_name = g_strdup("magma_compile");
-    self->compile_func = nullptr;
-    self->compile_precision = g_strdup("FP32");
-    self->calib_data_path = NULL;
-    self->to_primitives_func = nullptr;
-    self->semantic_type_str = NULL;
-    self->to_primitives_exported = FALSE;
-    self->config_file = NULL;
+	self->compile_func_name = g_strdup("magma_compile");
+	self->compile_func = nullptr;
+	self->compile_precision = g_strdup("FP32");
+	self->calib_data_path = NULL;
+	self->to_primitives_func = nullptr;
+	self->semantic_type_str = NULL;
+	self->to_primitives_exported = FALSE;
+	self->config_file = NULL;
 
-    self->confidence_thresh = 0.5f;
-    self->nms_thresh = 0.45f;
-    self->max_detections = 100;
+	self->confidence_thresh = 0.5f;
+	self->nms_thresh = 0.45f;
+	self->max_detections = 100;
 
-    self->class_filter = -1; /* -1 = no filter */
+	self->class_filter = -1; /* -1 = no filter */
 
-    /* DMABuf import cache */
-    self->cached_tensor_mem = NULL;
-    self->cached_tensor_ext = nullptr;
-    self->cached_tensor_dptr = 0;
+	/* DMABuf import cache */
+	self->cached_tensor_mem = NULL;
+	self->cached_tensor_ext = nullptr;
+	self->cached_tensor_dptr = 0;
 
-    gst_base_transform_set_in_place(GST_BASE_TRANSFORM(self), TRUE);
+	gst_base_transform_set_in_place(GST_BASE_TRANSFORM(self), TRUE);
 
-    /*self->d_parser_input = 0;
+	/*self->d_parser_input = 0;
 
-    hipError_t pe = hipMalloc(&self->d_parser_input, output_bytes);
-    if (pe != hipSuccess) {
-        GST_ERROR_OBJECT(self, "hipMalloc(parser_input %zu) failed", output_bytes);
-        // TODO this is such a shit pattern... like "yeah everythings fucked but even though we failed to allocate memory for the parser input buffer, lets just keep going and hope it works out"
-    }*/
+	hipError_t pe = hipMalloc(&self->d_parser_input, output_bytes);
+	if (pe != hipSuccess) {
+	    GST_ERROR_OBJECT(self, "hipMalloc(parser_input %zu) failed", output_bytes);
+	    // TODO this is such a shit pattern... like "yeah everythings fucked but even though we failed to allocate memory for the parser input buffer, lets just keep going and hope it works out"
+	}*/
 }
 
 /** --- CAPS NEGOTIATION --- */
 static gboolean gst_magma_infer_set_caps(GstBaseTransform* trans, GstCaps* incaps, GstCaps* outcaps) {
-    GstMagmaInfer* self = GST_MAGMA_INFER(trans);
-    GstVideoInfo info;
-    fprintf(stderr, "MAGMA_DBG: mgminfer set_caps()\n");
+	GstMagmaInfer* self = GST_MAGMA_INFER(trans);
+	GstVideoInfo info;
+	fprintf(stderr, "MAGMA_DBG: mgminfer set_caps()\n");
 
-    if (!gst_video_info_from_caps(&info, incaps)) {
-        GST_ERROR_OBJECT(self, "failed to parse incaps");
-        return FALSE;
-    }
+	if (!gst_video_info_from_caps(&info, incaps)) {
+		GST_ERROR_OBJECT(self, "failed to parse incaps");
+		return FALSE;
+	}
 
-    self->in_width = GST_VIDEO_INFO_WIDTH(&info);
-    self->in_height = GST_VIDEO_INFO_HEIGHT(&info);
+	self->in_width = GST_VIDEO_INFO_WIDTH(&info);
+	self->in_height = GST_VIDEO_INFO_HEIGHT(&info);
 
-    if (!ensure_objects_output(self)) {
-        GST_ERROR_OBJECT(self, "failed to allocate objects output buffer");
-        return FALSE;
-    }
+	if (!ensure_objects_output(self)) {
+		GST_ERROR_OBJECT(self, "failed to allocate objects output buffer");
+		return FALSE;
+	}
 
-    GST_INFO_OBJECT(self, "configured %dx%d %s", self->in_width, self->in_height, GST_VIDEO_INFO_NAME(&info));
-    return TRUE;
+	GST_INFO_OBJECT(self, "configured %dx%d %s", self->in_width, self->in_height, GST_VIDEO_INFO_NAME(&info));
+	return TRUE;
 }
 
 /** --- import a DMABuf → HIP device pointer (must destroy handle after use) --- */
 static hipExternalMemory_t import_dmabuf_to_hip(int dmabuf_fd, gsize size, hipDeviceptr_t* d_ptr) {
-    int hip_fd = fcntl(dmabuf_fd, F_DUPFD_CLOEXEC, 0);
-    if (hip_fd < 0)
-        return nullptr;
+	int hip_fd = fcntl(dmabuf_fd, F_DUPFD_CLOEXEC, 0);
+	if (hip_fd < 0)
+		return nullptr;
 
-    hipExternalMemoryHandleDesc desc{};
-    desc.type = hipExternalMemoryHandleTypeOpaqueFd;
-    desc.handle.fd = hip_fd;
-    desc.size = size;
-    hipExternalMemory_t ext_mem;
-    hipError_t err = hipImportExternalMemory(&ext_mem, &desc);
-    close(hip_fd);
-    if (err != hipSuccess)
-        return nullptr;
+	hipExternalMemoryHandleDesc desc{};
+	desc.type = hipExternalMemoryHandleTypeOpaqueFd;
+	desc.handle.fd = hip_fd;
+	desc.size = size;
+	hipExternalMemory_t ext_mem;
+	hipError_t err = hipImportExternalMemory(&ext_mem, &desc);
+	close(hip_fd);
+	if (err != hipSuccess)
+		return nullptr;
 
-    hipExternalMemoryBufferDesc bdesc{};
-    bdesc.offset = 0;
-    bdesc.size = size;
-    err = hipExternalMemoryGetMappedBuffer(d_ptr, ext_mem, &bdesc);
-    if (err != hipSuccess) {
-        (void)hipDestroyExternalMemory(ext_mem);
-        return nullptr;
-    }
-    return ext_mem;
+	hipExternalMemoryBufferDesc bdesc{};
+	bdesc.offset = 0;
+	bdesc.size = size;
+	err = hipExternalMemoryGetMappedBuffer(d_ptr, ext_mem, &bdesc);
+	if (err != hipSuccess) {
+		(void)hipDestroyExternalMemory(ext_mem);
+		return nullptr;
+	}
+	return ext_mem;
 }
 
 /** --- dummy kernel fallback (removed — model must succeed or fail) --- */
@@ -675,59 +684,59 @@ static hipExternalMemory_t import_dmabuf_to_hip(int dmabuf_fd, gsize size, hipDe
  * @return GST_FLOW_OK on success
  */
 static GstFlowReturn attach_inference_meta(GstMagmaInfer* self, GstBuffer* buf, gint num_objects) {
-    MagmaInferenceMeta* m = magma_buffer_add_inference_meta(buf, self->in_width, self->in_height);
-    if (!m) {
-        GST_ERROR_OBJECT(self, "failed to attach inference meta");
-        return GST_FLOW_ERROR;
-    }
+	MagmaInferenceMeta* m = magma_buffer_add_inference_meta(buf, self->in_width, self->in_height);
+	if (!m) {
+		GST_ERROR_OBJECT(self, "failed to attach inference meta");
+		return GST_FLOW_ERROR;
+	}
 
-    /* copy preprocessing context from tensor meta (ROI + model dims) */
-    MagmaTensorMeta* tmeta = magma_buffer_get_tensor_meta(buf);
-    if (tmeta) {
-        m->roi_x = tmeta->roi_x;
-        m->roi_y = tmeta->roi_y;
-        m->roi_w = tmeta->roi_w;
-        m->roi_h = tmeta->roi_h;
-        m->model_width = tmeta->width;
-        m->model_height = tmeta->height;
-    }
+	/* copy preprocessing context from tensor meta (ROI + model dims) */
+	MagmaTensorMeta* tmeta = magma_buffer_get_tensor_meta(buf);
+	if (tmeta) {
+		m->roi_x = tmeta->roi_x;
+		m->roi_y = tmeta->roi_y;
+		m->roi_w = tmeta->roi_w;
+		m->roi_h = tmeta->roi_h;
+		m->model_width = tmeta->width;
+		m->model_height = tmeta->height;
+	}
 
-    /* GPU atomic counter may over-report — clamp to allocated size */
-    gint n = num_objects > 0 ? std::min(num_objects, (gint)self->max_objects) : 0;
-    m->num_objects = n;
+	/* GPU atomic counter may over-report — clamp to allocated size */
+	gint n = num_objects > 0 ? std::min(num_objects, (gint)self->max_objects) : 0;
+	m->num_objects = n;
 
-    if (n > 0) {
-        gsize bytes = (gsize)n * sizeof(MagmaInferObjectGPU);
-        MagmaInferObjectGPU* host = (MagmaInferObjectGPU*)g_malloc(bytes);
-        hipError_t herr = hipMemcpyDtoH(host, self->d_objects, bytes);
-        if (herr != hipSuccess) {
-            GST_ERROR_OBJECT(self, "hipMemcpyDtoH(objects %zu) failed: %s", bytes, hipGetErrorString(herr));
-            g_free(host);
-            return GST_FLOW_ERROR;
-        }
+	if (n > 0) {
+		gsize bytes = (gsize)n * sizeof(MagmaInferObjectGPU);
+		MagmaInferObjectGPU* host = (MagmaInferObjectGPU*)g_malloc(bytes);
+		hipError_t herr = hipMemcpyDtoH(host, self->d_objects, bytes);
+		if (herr != hipSuccess) {
+			GST_ERROR_OBJECT(self, "hipMemcpyDtoH(objects %zu) failed: %s", bytes, hipGetErrorString(herr));
+			g_free(host);
+			return GST_FLOW_ERROR;
+		}
 
-        /* apply class filter */
-        if (self->class_filter >= 0) {
-            gint wr = 0;
-            for (gint rd = 0; rd < n; rd++) {
-                if ((gint)host[rd].class_id == self->class_filter)
-                    host[wr++] = host[rd];
-            }
-            n = wr;
-        }
+		/* apply class filter */
+		if (self->class_filter >= 0) {
+			gint wr = 0;
+			for (gint rd = 0; rd < n; rd++) {
+				if ((gint)host[rd].class_id == self->class_filter)
+					host[wr++] = host[rd];
+			}
+			n = wr;
+		}
 
-        gsize filtered_bytes = n > 0 ? (gsize)n * sizeof(MagmaInferObjectGPU) : 0;
-        m->num_objects = n;
-        if (n > 0) {
-            m->objects_gpu = gst_memory_new_wrapped(GST_MEMORY_FLAG_READONLY, host, filtered_bytes, 0, filtered_bytes, host, g_free);
-        } else {
-            g_free(host);
-            m->objects_gpu = NULL;
-        }
-    } else {
-        m->objects_gpu = NULL;
-    }
-    return GST_FLOW_OK;
+		gsize filtered_bytes = n > 0 ? (gsize)n * sizeof(MagmaInferObjectGPU) : 0;
+		m->num_objects = n;
+		if (n > 0) {
+			m->objects_gpu = gst_memory_new_wrapped(GST_MEMORY_FLAG_READONLY, host, filtered_bytes, 0, filtered_bytes, host, g_free);
+		} else {
+			g_free(host);
+			m->objects_gpu = NULL;
+		}
+	} else {
+		m->objects_gpu = NULL;
+	}
+	return GST_FLOW_OK;
 }
 
 /** --- TRANSFORM --- */
@@ -744,387 +753,388 @@ static GstFlowReturn attach_inference_meta(GstMagmaInfer* self, GstBuffer* buf, 
  * @return GST_FLOW_OK on success
  */
 static GstFlowReturn gst_magma_infer_transform_ip(GstBaseTransform* trans, GstBuffer* buf) {
-    GstMagmaInfer* self = GST_MAGMA_INFER(trans);
+	GstMagmaInfer* self = GST_MAGMA_INFER(trans);
 
-    self->frame_counter++;
-    if ((self->frame_counter - 1) % self->inference_interval != 0)
-        return GST_FLOW_OK;
+	self->frame_counter++;
+	if ((self->frame_counter - 1) % self->inference_interval != 0)
+		return GST_FLOW_OK;
 
-    MagmaTensorMeta* tmeta = magma_buffer_get_tensor_meta(buf);
-    if (!tmeta) {
-        GST_WARNING_OBJECT(self, "no tensor meta — skipping inference");
-        return GST_FLOW_OK;
-    }
+	MagmaTensorMeta* tmeta = magma_buffer_get_tensor_meta(buf);
+	if (!tmeta) {
+		GST_WARNING_OBJECT(self, "no tensor meta — skipping inference");
+		return GST_FLOW_OK;
+	}
 
-    /* ensure stream (shared with mgmpreproc — guarantees GPU ordering without CPU sync) */
-    if (!self->hip_stream) {
-        self->hip_stream = magma_get_shared_hip_stream();
-        if (!self->hip_stream) {
-            GST_ERROR_OBJECT(self, "magma_get_shared_hip_stream failed");
-            return GST_FLOW_ERROR;
-        }
-    }
+	/* ensure stream (shared with mgmpreproc — guarantees GPU ordering without CPU sync) */
+	if (!self->hip_stream) {
+		self->hip_stream = magma_get_shared_hip_stream();
+		if (!self->hip_stream) {
+			GST_ERROR_OBJECT(self, "magma_get_shared_hip_stream failed");
+			return GST_FLOW_ERROR;
+		}
+	}
 
-    /* MIGraphX path */
-    if (self->model_loaded) {
-        auto* model = static_cast<MigraphXModel*>(self->migraphx_model);
+	/* MIGraphX path */
+	if (self->model_loaded) {
+		auto* model = static_cast<MigraphXModel*>(self->migraphx_model);
 
-        /* MIGraphX may compile dynamic ONNX dims as 1 (placeholders).
-           Only check batch=1 and channels match; let MIGraphX reshape
-           the dynamic spatial dims at runtime. */
-        bool shape_ok = (model->input_lengths.size() == 3 && (int)model->input_lengths[0] == tmeta->channels &&
-                         (int)model->input_lengths[1] == tmeta->height && (int)model->input_lengths[2] == tmeta->width) ||
-                        (model->input_lengths.size() == 4 && (int)model->input_lengths[0] == 1 && (int)model->input_lengths[1] == tmeta->channels &&
-                         (int)model->input_lengths[2] <= tmeta->height && (int)model->input_lengths[3] <= tmeta->width);
-        if (shape_ok) {
+		/* MIGraphX may compile dynamic ONNX dims as 1 (placeholders).
+		   Only check batch=1 and channels match; let MIGraphX reshape
+		   the dynamic spatial dims at runtime. */
+		bool shape_ok =
+		    (model->input_lengths.size() == 3 && (int)model->input_lengths[0] == tmeta->channels && (int)model->input_lengths[1] == tmeta->height && (int)model->input_lengths[2] == tmeta->width) ||
+		    (model->input_lengths.size() == 4 && (int)model->input_lengths[0] == 1 && (int)model->input_lengths[1] == tmeta->channels && (int)model->input_lengths[2] <= tmeta->height &&
+		     (int)model->input_lengths[3] <= tmeta->width);
+		if (shape_ok) {
 
-            /* import tensor DMABuf → HIP (cached — tensor fd is stable across frames) */
-            if (tmeta->tensor_mem != self->cached_tensor_mem) {
-                if (self->cached_tensor_ext) {
-                    (void)hipDestroyExternalMemory(self->cached_tensor_ext);
-                    self->cached_tensor_ext = nullptr;
-                }
-                self->cached_tensor_dptr = 0;
-                self->cached_tensor_mem = NULL;
+			/* import tensor DMABuf → HIP (cached — tensor fd is stable across frames) */
+			if (tmeta->tensor_mem != self->cached_tensor_mem) {
+				if (self->cached_tensor_ext) {
+					(void)hipDestroyExternalMemory(self->cached_tensor_ext);
+					self->cached_tensor_ext = nullptr;
+				}
+				self->cached_tensor_dptr = 0;
+				self->cached_tensor_mem = NULL;
 
-                int tensor_fd = gst_dmabuf_memory_get_fd(tmeta->tensor_mem);
-                if (tensor_fd < 0) {
-                    GST_ERROR_OBJECT(self, "failed to get tensor DMABuf fd");
-                    return GST_FLOW_ERROR;
-                }
-                gsize tensor_bytes = gst_memory_get_sizes(tmeta->tensor_mem, NULL, NULL);
-                hipExternalMemory_t ext = import_dmabuf_to_hip(tensor_fd, tensor_bytes, &self->cached_tensor_dptr);
-                close(tensor_fd);
-                if (!ext || !self->cached_tensor_dptr) {
-                    self->cached_tensor_dptr = 0;
-                    GST_ERROR_OBJECT(self, "failed to import tensor DMABuf to HIP");
-                    return GST_FLOW_ERROR;
-                }
-                self->cached_tensor_ext = ext;
-                self->cached_tensor_mem = tmeta->tensor_mem;
-            }
-            hipDeviceptr_t d_tensor = self->cached_tensor_dptr;
+				int tensor_fd = gst_dmabuf_memory_get_fd(tmeta->tensor_mem);
+				if (tensor_fd < 0) {
+					GST_ERROR_OBJECT(self, "failed to get tensor DMABuf fd");
+					return GST_FLOW_ERROR;
+				}
+				gsize tensor_bytes = gst_memory_get_sizes(tmeta->tensor_mem, NULL, NULL);
+				hipExternalMemory_t ext = import_dmabuf_to_hip(tensor_fd, tensor_bytes, &self->cached_tensor_dptr);
+				close(tensor_fd);
+				if (!ext || !self->cached_tensor_dptr) {
+					self->cached_tensor_dptr = 0;
+					GST_ERROR_OBJECT(self, "failed to import tensor DMABuf to HIP");
+					return GST_FLOW_ERROR;
+				}
+				self->cached_tensor_ext = ext;
+				self->cached_tensor_mem = tmeta->tensor_mem;
+			}
+			hipDeviceptr_t d_tensor = self->cached_tensor_dptr;
 
-            /* build argument map — pass all params */
-            try {
-                migraphx::program_parameters eval_args;
-                {
-                    std::size_t scratch_idx = 0;
-                    for (auto& [n, s] : model->all_params) {
-                        migraphx::shape arg_shape(s.type(), s.lengths());
-                        if (n == model->input_name) {
-                            eval_args.add(n.c_str(), migraphx::argument(arg_shape, (void*)d_tensor));
-                        } else {
-                            eval_args.add(n.c_str(), migraphx::argument(arg_shape, (void*)model->d_output_scratch[scratch_idx++]));
-                        }
-                    }
-                }
+			/* build argument map — pass all params */
+			try {
+				migraphx::program_parameters eval_args;
+				{
+					std::size_t scratch_idx = 0;
+					for (auto& [n, s] : model->all_params) {
+						migraphx::shape arg_shape(s.type(), s.lengths());
+						if (n == model->input_name) {
+							eval_args.add(n.c_str(), migraphx::argument(arg_shape, (void*)d_tensor));
+						} else {
+							eval_args.add(n.c_str(), migraphx::argument(arg_shape, (void*)model->d_output_scratch[scratch_idx++]));
+						}
+					}
+				}
 
-                auto outputs = model->prog.run_async(eval_args, self->hip_stream);
+				auto outputs = model->prog.run_async(eval_args, self->hip_stream);
 
-                if (outputs.empty()) {
+				if (outputs.empty()) {
 
-                    GST_ERROR_OBJECT(self, "MIGraphX returned no outputs");
-                    return GST_FLOW_ERROR;
-                }
+					GST_ERROR_OBJECT(self, "MIGraphX returned no outputs");
+					return GST_FLOW_ERROR;
+				}
 
-                /* --- build multi-output arrays for the parser --- */
-                int n_out = (int)outputs.size();
-                std::vector<const void*> raw_ptrs(n_out);
-                std::vector<const int64_t*> shape_ptrs(n_out);
-                std::vector<int> ndims(n_out);
-                std::vector<std::vector<int64_t>> shape_storage(n_out);
-                for (int i = 0; i < n_out; i++) {
-                    auto s = outputs[i].get_shape();
-                    auto lens = s.lengths();
-                    shape_storage[i].assign(lens.begin(), lens.end());
-                    raw_ptrs[i] = outputs[i].data();
-                    shape_ptrs[i] = shape_storage[i].data();
-                    ndims[i] = (int)lens.size();
-                }
+				/* --- build multi-output arrays for the parser --- */
+				int n_out = (int)outputs.size();
+				std::vector<const void*> raw_ptrs(n_out);
+				std::vector<const int64_t*> shape_ptrs(n_out);
+				std::vector<int> ndims(n_out);
+				std::vector<std::vector<int64_t>> shape_storage(n_out);
+				for (int i = 0; i < n_out; i++) {
+					auto s = outputs[i].get_shape();
+					auto lens = s.lengths();
+					shape_storage[i].assign(lens.begin(), lens.end());
+					raw_ptrs[i] = outputs[i].data();
+					shape_ptrs[i] = shape_storage[i].data();
+					ndims[i] = (int)lens.size();
+				}
 
-                auto* d_first_output = static_cast<const char*>(outputs.front().data());
-                auto first_output_shape = outputs.front().get_shape();
-                GST_LOG_OBJECT(self, "first output ptr=%p (%d outputs total)", (void*)d_first_output, n_out);
-                for (int oi = 0; oi < n_out; oi++) {
-                    auto os = outputs[oi].get_shape();
-                    auto ol = os.lengths();
-                    std::string dims;
-                    for (auto d : ol) dims += std::to_string(d) + " ";
-                    GST_INFO_OBJECT(self, "  output[%d]: type=%zu shape=[%s] bytes=%zu", oi, (std::size_t)os.type(), dims.c_str(), os.bytes());
-                }
+				auto* d_first_output = static_cast<const char*>(outputs.front().data());
+				auto first_output_shape = outputs.front().get_shape();
+				GST_LOG_OBJECT(self, "first output ptr=%p (%d outputs total)", (void*)d_first_output, n_out);
+				for (int oi = 0; oi < n_out; oi++) {
+					auto os = outputs[oi].get_shape();
+					auto ol = os.lengths();
+					std::string dims;
+					for (auto d : ol)
+						dims += std::to_string(d) + " ";
+					GST_INFO_OBJECT(self, "  output[%d]: type=%zu shape=[%s] bytes=%zu", oi, (std::size_t)os.type(), dims.c_str(), os.bytes());
+				}
 
-                /* --- parser dispatch --- */
-                if (self->parser_func) {
-                    int net_w = self->in_width;
-                    int net_h = self->in_height;
-                    {
-                        auto* m = static_cast<MigraphXModel*>(self->migraphx_model);
-                        if (m) {
-                            net_w = m->model_width;
-                            net_h = m->model_height;
-                        }
-                    }
+				/* --- parser dispatch --- */
+				if (self->parser_func) {
+					int net_w = self->in_width;
+					int net_h = self->in_height;
+					{
+						auto* m = static_cast<MigraphXModel*>(self->migraphx_model);
+						if (m) {
+							net_w = m->model_width;
+							net_h = m->model_height;
+						}
+					}
 
-                    MagmaParseParams params{};
+					MagmaParseParams params{};
 
-                    params.d_raw_output = (const void*)d_first_output;
-                    params.output_shape = shape_ptrs[0];
-                    params.num_dims = ndims[0];
-                    params.num_raw_outputs = n_out;
-                    params.d_raw_outputs = raw_ptrs.data();
-                    params.output_shapes = shape_ptrs.data();
-                    params.num_dims_list = ndims.data();
-                    params.net_width = net_w;
-                    params.net_height = net_h;
-                    params.confidence_thresh = self->confidence_thresh;
-                    params.nms_thresh = self->nms_thresh;
-                    params.max_detections = (int)self->max_detections;
-                    params.d_objects = self->d_objects;
-                    params.d_num_detected = self->d_num_det;
-                    params.stream = (void*)self->hip_stream;
+					params.d_raw_output = (const void*)d_first_output;
+					params.output_shape = shape_ptrs[0];
+					params.num_dims = ndims[0];
+					params.num_raw_outputs = n_out;
+					params.d_raw_outputs = raw_ptrs.data();
+					params.output_shapes = shape_ptrs.data();
+					params.num_dims_list = ndims.data();
+					params.net_width = net_w;
+					params.net_height = net_h;
+					params.confidence_thresh = self->confidence_thresh;
+					params.nms_thresh = self->nms_thresh;
+					params.max_detections = (int)self->max_detections;
+					params.d_objects = self->d_objects;
+					params.d_num_detected = self->d_num_det;
+					params.stream = (void*)self->hip_stream;
 
-                    /* --- mask buffer setup --- */
-                    int mask_h = 0, mask_w = 0;
-                    if (n_out >= 3 && ndims[2] >= 4) {
-                        /* InternImage: per-instance masks at output[2] */
-                        mask_h = (int)shape_storage[2][2];
-                        mask_w = (int)shape_storage[2][3];
-                    } else if (n_out >= 2 && ndims[1] >= 4) {
-                        /* YOLO-seg: proto mask at output[1] */
-                        mask_h = (int)shape_storage[1][2];
-                        mask_w = (int)shape_storage[1][3];
-                    }
-                    if (mask_h > 0 && mask_w > 0) {
-                        int mask_pixels = mask_h * mask_w;
-                        size_t needed = (size_t)self->max_detections * (size_t)mask_pixels * sizeof(float);
-                        if (needed > (size_t)self->d_masks_buffer_bytes) {
-                            if (self->d_masks_buffer) {
-                                (void)hipFree(self->d_masks_buffer);
-                                self->d_masks_buffer = nullptr;
-                            }
-                            self->d_masks_buffer_bytes = 0;
-                            hipError_t me = hipMalloc(&self->d_masks_buffer, needed);
-                            if (me == hipSuccess) {
-                                self->d_masks_buffer_bytes = (int)needed;
-                                self->d_masks_h = mask_h;
-                                self->d_masks_w = mask_w;
-                            } else {
-                                GST_WARNING_OBJECT(self, "hipMalloc(masks %zu) failed: %s", needed, hipGetErrorString(me));
-                            }
-                        }
-                        params.d_masks = self->d_masks_buffer;
-                        params.mask_h = mask_h;
-                        params.mask_w = mask_w;
-                    }
+					/* --- mask buffer setup --- */
+					int mask_h = 0, mask_w = 0;
+					if (n_out >= 3 && ndims[2] >= 4) {
+						/* InternImage: per-instance masks at output[2] */
+						mask_h = (int)shape_storage[2][2];
+						mask_w = (int)shape_storage[2][3];
+					} else if (n_out >= 2 && ndims[1] >= 4) {
+						/* YOLO-seg: proto mask at output[1] */
+						mask_h = (int)shape_storage[1][2];
+						mask_w = (int)shape_storage[1][3];
+					}
+					if (mask_h > 0 && mask_w > 0) {
+						int mask_pixels = mask_h * mask_w;
+						size_t needed = (size_t)self->max_detections * (size_t)mask_pixels * sizeof(float);
+						if (needed > (size_t)self->d_masks_buffer_bytes) {
+							if (self->d_masks_buffer) {
+								(void)hipFree(self->d_masks_buffer);
+								self->d_masks_buffer = nullptr;
+							}
+							self->d_masks_buffer_bytes = 0;
+							hipError_t me = hipMalloc(&self->d_masks_buffer, needed);
+							if (me == hipSuccess) {
+								self->d_masks_buffer_bytes = (int)needed;
+								self->d_masks_h = mask_h;
+								self->d_masks_w = mask_w;
+							} else {
+								GST_WARNING_OBJECT(self, "hipMalloc(masks %zu) failed: %s", needed, hipGetErrorString(me));
+							}
+						}
+						params.d_masks = self->d_masks_buffer;
+						params.mask_h = mask_h;
+						params.mask_w = mask_w;
+					}
 
-                    GST_INFO_OBJECT(self, "pre-parser: calling parser_func at %p (%d outputs, masks=%dx%d)", (void*)self->parser_func, n_out, mask_h, mask_w);
+					GST_INFO_OBJECT(self, "pre-parser: calling parser_func at %p (%d outputs, masks=%dx%d)", (void*)self->parser_func, n_out, mask_h, mask_w);
 
-                    int pret = self->parser_func(&params);
+					int pret = self->parser_func(&params);
 
-                    if (pret != 0) {
-                        GST_ERROR_OBJECT(self, "parser failed with code %d", pret);
+					if (pret != 0) {
+						GST_ERROR_OBJECT(self, "parser failed with code %d", pret);
 
-                        return GST_FLOW_ERROR;
-                    }
+						return GST_FLOW_ERROR;
+					}
 
-                    int num_detected = 0;
-                    (void)hipMemcpyDtoH(&num_detected, self->d_num_det, sizeof(int));
+					int num_detected = 0;
+					(void)hipMemcpyDtoH(&num_detected, self->d_num_det, sizeof(int));
 
-                    GST_LOG_OBJECT(self, "frame %u — parser produced %d objects", self->frame_counter, num_detected);
+					GST_LOG_OBJECT(self, "frame %u — parser produced %d objects", self->frame_counter, num_detected);
 
-                    GstFlowReturn fret = attach_inference_meta(self, buf, num_detected);
+					GstFlowReturn fret = attach_inference_meta(self, buf, num_detected);
 
-                    /* Copy mask data from GPU → CPU and attach to meta */
-                    GstMemory* masks_mem = NULL;
-                    if (fret == GST_FLOW_OK && self->d_masks_buffer && mask_h > 0 && num_detected > 0) {
-                        int mask_pixels = mask_h * mask_w;
-                        gsize mask_bytes = (gsize)num_detected * (gsize)mask_pixels * sizeof(float);
-                        float* host_masks = (float*)g_malloc(mask_bytes);
-                        hipError_t me = hipMemcpyDtoH(host_masks, self->d_masks_buffer, mask_bytes);
-                        if (me == hipSuccess) {
-                            masks_mem = gst_memory_new_wrapped(GST_MEMORY_FLAG_READONLY,
-                                host_masks, mask_bytes, 0, mask_bytes, host_masks, g_free);
-                            MagmaInferenceMeta* im = magma_buffer_get_inference_meta(buf);
-                            if (im) {
-                                im->num_masks = (guint)num_detected;
-                                im->masks_gpu = masks_mem ? gst_memory_ref(masks_mem) : NULL;
-                                im->mask_width = (guint)mask_w;
-                                im->mask_height = (guint)mask_h;
-                            }
-                        } else {
-                            g_free(host_masks);
-                            GST_WARNING_OBJECT(self, "hipMemcpyDtoH(masks %zu) failed: %s", mask_bytes, hipGetErrorString(me));
-                        }
-                    }
+					/* Copy mask data from GPU → CPU and attach to meta */
+					GstMemory* masks_mem = NULL;
+					if (fret == GST_FLOW_OK && self->d_masks_buffer && mask_h > 0 && num_detected > 0) {
+						int mask_pixels = mask_h * mask_w;
+						gsize mask_bytes = (gsize)num_detected * (gsize)mask_pixels * sizeof(float);
+						float* host_masks = (float*)g_malloc(mask_bytes);
+						hipError_t me = hipMemcpyDtoH(host_masks, self->d_masks_buffer, mask_bytes);
+						if (me == hipSuccess) {
+							masks_mem = gst_memory_new_wrapped(GST_MEMORY_FLAG_READONLY, host_masks, mask_bytes, 0, mask_bytes, host_masks, g_free);
+							MagmaInferenceMeta* im = magma_buffer_get_inference_meta(buf);
+							if (im) {
+								im->num_masks = (guint)num_detected;
+								im->masks_gpu = masks_mem ? gst_memory_ref(masks_mem) : NULL;
+								im->mask_width = (guint)mask_w;
+								im->mask_height = (guint)mask_h;
+							}
+						} else {
+							g_free(host_masks);
+							GST_WARNING_OBJECT(self, "hipMemcpyDtoH(masks %zu) failed: %s", mask_bytes, hipGetErrorString(me));
+						}
+					}
 
-                    /* Also attach MagmaSemanticMeta for model-agnostic rendering */
-                    if (fret == GST_FLOW_OK) {
-                        MagmaInferenceMeta* im = magma_buffer_get_inference_meta(buf);
-                        if (im && im->objects_gpu) {
-                            const char* tid_str = self->semantic_type_str
-                                                   ? self->semantic_type_str
-                                                   : "magma.detection.v1";
-                            MagmaSemanticMeta* sm = magma_buffer_add_semantic_meta_full(
-                                buf, g_quark_from_string(tid_str),
-                                im->objects_gpu, self->in_width, self->in_height,
-                                masks_mem, im->num_masks,
-                                im->mask_width, im->mask_height);
-                            if (sm) {
-                                sm->roi_x = im->roi_x;
-                                sm->roi_y = im->roi_y;
-                                sm->roi_w = im->roi_w;
-                                sm->roi_h = im->roi_h;
-                                sm->model_width = im->model_width;
-                                sm->model_height = im->model_height;
-                                /* Carry raw GPU pointers for GPU-only mask decode */
-                                sm->d_masks_gpu = (hipDeviceptr_t)self->d_masks_buffer;
-                                sm->d_objects_gpu = (hipDeviceptr_t)self->d_objects;
-                                sm->masks_gpu_bytes = self->d_masks_buffer_bytes;
-                            }
-                        }
-                    }
-                    if (masks_mem) {
-                        gst_memory_unref(masks_mem);
-                        masks_mem = NULL;
-                    }
+					/* Also attach MagmaSemanticMeta for model-agnostic rendering */
+					if (fret == GST_FLOW_OK) {
+						MagmaInferenceMeta* im = magma_buffer_get_inference_meta(buf);
+						if (im && im->objects_gpu) {
+							const char* tid_str = self->semantic_type_str ? self->semantic_type_str : "magma.detection.v1";
+							MagmaSemanticMeta* sm = magma_buffer_add_semantic_meta_full(
+							    buf, g_quark_from_string(tid_str), im->objects_gpu, self->in_width, self->in_height, masks_mem, im->num_masks, im->mask_width, im->mask_height);
+							if (sm) {
+								sm->roi_x = im->roi_x;
+								sm->roi_y = im->roi_y;
+								sm->roi_w = im->roi_w;
+								sm->roi_h = im->roi_h;
+								sm->model_width = im->model_width;
+								sm->model_height = im->model_height;
+								/* Carry raw GPU pointers for GPU-only mask decode */
+								sm->d_masks_gpu = (hipDeviceptr_t)self->d_masks_buffer;
+								sm->d_objects_gpu = (hipDeviceptr_t)self->d_objects;
+								sm->masks_gpu_bytes = self->d_masks_buffer_bytes;
+							}
+						}
+					}
+					if (masks_mem) {
+						gst_memory_unref(masks_mem);
+						masks_mem = NULL;
+					}
 
-                    return fret;
-                } else {
-                    /* --- fallback: legacy hardcoded path (no parser) --- */
-                    gsize output_bytes = first_output_shape.bytes();
-                    gsize copy_bytes = std::min(output_bytes, self->max_objects * sizeof(MagmaInferObjectGPU));
+					return fret;
+				} else {
+					/* --- fallback: legacy hardcoded path (no parser) --- */
+					gsize output_bytes = first_output_shape.bytes();
+					gsize copy_bytes = std::min(output_bytes, self->max_objects * sizeof(MagmaInferObjectGPU));
 
-                    hipError_t herr = hipMemcpyDtoD(self->d_objects, (hipDeviceptr_t)d_first_output, copy_bytes);
-                    if (herr != hipSuccess) {
-                        GST_ERROR_OBJECT(self, "hipMemcpyDtoD failed: %s", hipGetErrorString(herr));
+					hipError_t herr = hipMemcpyDtoD(self->d_objects, (hipDeviceptr_t)d_first_output, copy_bytes);
+					if (herr != hipSuccess) {
+						GST_ERROR_OBJECT(self, "hipMemcpyDtoD failed: %s", hipGetErrorString(herr));
 
-                        return GST_FLOW_ERROR;
-                    }
+						return GST_FLOW_ERROR;
+					}
 
-                    float confidence = 0.0f;
-                    (void)hipMemcpyDtoH(&confidence, self->d_objects, sizeof(float));
-                    MagmaInferObjectGPU objs[1] = {};
-                    objs[0].class_id = 1;
-                    objs[0].confidence = confidence;
-                    objs[0].x = 0.0f;
-                    objs[0].y = 0.0f;
-                    objs[0].width = 1.0f;
-                    objs[0].height = 1.0f;
-                    (void)hipMemcpyHtoD(self->d_objects, objs, sizeof(objs));
+					float confidence = 0.0f;
+					(void)hipMemcpyDtoH(&confidence, self->d_objects, sizeof(float));
+					MagmaInferObjectGPU objs[1] = {};
+					objs[0].class_id = 1;
+					objs[0].confidence = confidence;
+					objs[0].x = 0.0f;
+					objs[0].y = 0.0f;
+					objs[0].width = 1.0f;
+					objs[0].height = 1.0f;
+					(void)hipMemcpyHtoD(self->d_objects, objs, sizeof(objs));
 
-                    GST_LOG_OBJECT(self, "frame %u — MIGraphX inference, confidence=%.4f", self->frame_counter, confidence);
-                    return attach_inference_meta(self, buf, 1);
-                }
-            } catch (const std::exception& e) {
-                GST_ERROR_OBJECT(self, "MIGraphX eval failed: %s", e.what());
+					GST_LOG_OBJECT(self, "frame %u — MIGraphX inference, confidence=%.4f", self->frame_counter, confidence);
+					return attach_inference_meta(self, buf, 1);
+				}
+			} catch (const std::exception& e) {
+				GST_ERROR_OBJECT(self, "MIGraphX eval failed: %s", e.what());
 
-                return GST_FLOW_ERROR;
-            }
-        } else {
-            GST_ERROR_OBJECT(self, "tensor %dx%dx%d does not match model (expected %zu dims)", tmeta->channels, tmeta->height, tmeta->width, model->input_lengths.size());
-            return GST_FLOW_ERROR;
-        }
-    }
+				return GST_FLOW_ERROR;
+			}
+		} else {
+			GST_ERROR_OBJECT(self, "tensor %dx%dx%d does not match model (expected %zu dims)", tmeta->channels, tmeta->height, tmeta->width, model->input_lengths.size());
+			return GST_FLOW_ERROR;
+		}
+	}
 
-    GST_ERROR_OBJECT(self, "no model loaded — cannot infer");
-    return GST_FLOW_ERROR;
+	GST_ERROR_OBJECT(self, "no model loaded — cannot infer");
+	return GST_FLOW_ERROR;
 }
 
 /** --- CLASS INIT --- */
 static void gst_magma_infer_class_init(GstMagmaInferClass* klass) {
-    GObjectClass* gobject_class = G_OBJECT_CLASS(klass);
-    GstElementClass* element_class = GST_ELEMENT_CLASS(klass);
-    GstBaseTransformClass* trans = GST_BASE_TRANSFORM_CLASS(klass);
+	GObjectClass* gobject_class = G_OBJECT_CLASS(klass);
+	GstElementClass* element_class = GST_ELEMENT_CLASS(klass);
+	GstBaseTransformClass* trans = GST_BASE_TRANSFORM_CLASS(klass);
 
-    gobject_class->set_property = gst_magma_infer_set_property;
-    gobject_class->get_property = gst_magma_infer_get_property;
-    gobject_class->finalize = gst_magma_infer_finalize;
+	gobject_class->set_property = gst_magma_infer_set_property;
+	gobject_class->get_property = gst_magma_infer_get_property;
+	gobject_class->finalize = gst_magma_infer_finalize;
 
-    g_object_class_install_property(gobject_class, PROP_ONNX_MODEL_PATH, g_param_spec_string("model-onnx-file", "The Onnx Model path", "Path to the onnx model file", NULL, G_PARAM_READWRITE));
-    g_object_class_install_property(
-        gobject_class,
-        PROP_MXR_MODEL_PATH,
-        g_param_spec_string("model-mxr-file", "The MXR Model path", "Path to the mxr model file(needs model-onnx-file, if there path is either invalid or outdated)", NULL, G_PARAM_READWRITE));
+	g_object_class_install_property(gobject_class, PROP_ONNX_MODEL_PATH, g_param_spec_string("model-onnx-file", "The Onnx Model path", "Path to the onnx model file", NULL, G_PARAM_READWRITE));
+	g_object_class_install_property(
+	    gobject_class,
+	    PROP_MXR_MODEL_PATH,
+	    g_param_spec_string("model-mxr-file", "The MXR Model path", "Path to the mxr model file(needs model-onnx-file, if there path is either invalid or outdated)", NULL, G_PARAM_READWRITE));
 
-    g_object_class_install_property(
-        gobject_class, PROP_INFERENCE_INTERVAL, g_param_spec_uint("inference-interval", "Inference interval", "Run inference every N frames (1 = every frame)", 1, G_MAXUINT32, 1, G_PARAM_READWRITE));
+	g_object_class_install_property(
+	    gobject_class, PROP_INFERENCE_INTERVAL, g_param_spec_uint("inference-interval", "Inference interval", "Run inference every N frames (1 = every frame)", 1, G_MAXUINT32, 1, G_PARAM_READWRITE));
 
-    g_object_class_install_property(gobject_class, PROP_PARSER_PLUGIN, g_param_spec_string("parser-plugin", "Parser plugin", "Path to parser .so (dlopen)", NULL, G_PARAM_READWRITE));
+	g_object_class_install_property(gobject_class, PROP_PARSER_PLUGIN, g_param_spec_string("parser-plugin", "Parser plugin", "Path to parser .so (dlopen)", NULL, G_PARAM_READWRITE));
 
-    g_object_class_install_property(gobject_class, PROP_PARSER_FUNC, g_param_spec_string("parser-function", "Parser function", "Symbol name in parser .so", "magma_parse", G_PARAM_READWRITE));
+	g_object_class_install_property(gobject_class, PROP_PARSER_FUNC, g_param_spec_string("parser-function", "Parser function", "Symbol name in parser .so", "magma_parse", G_PARAM_READWRITE));
 
-    g_object_class_install_property(
-        gobject_class, PROP_CONFIDENCE_THRESH, g_param_spec_float("confidence-threshold", "Confidence threshold", "Minimum confidence to keep a detection", 0.0f, 1.0f, 0.5f, G_PARAM_READWRITE));
+	g_object_class_install_property(
+	    gobject_class, PROP_CONFIDENCE_THRESH, g_param_spec_float("confidence-threshold", "Confidence threshold", "Minimum confidence to keep a detection", 0.0f, 1.0f, 0.5f, G_PARAM_READWRITE));
 
-    g_object_class_install_property(gobject_class, PROP_NMS_THRESH, g_param_spec_float("nms-threshold", "NMS threshold", "IoU threshold for NMS suppression", 0.0f, 1.0f, 0.45f, G_PARAM_READWRITE));
+	g_object_class_install_property(gobject_class, PROP_NMS_THRESH, g_param_spec_float("nms-threshold", "NMS threshold", "IoU threshold for NMS suppression", 0.0f, 1.0f, 0.45f, G_PARAM_READWRITE));
 
-    g_object_class_install_property(
-        gobject_class, PROP_MAX_DETECTIONS, g_param_spec_uint("max-detections", "Max detections", "Maximum number of output objects per frame", 1, 10000, 100, G_PARAM_READWRITE));
+	g_object_class_install_property(
+	    gobject_class, PROP_MAX_DETECTIONS, g_param_spec_uint("max-detections", "Max detections", "Maximum number of output objects per frame", 1, 10000, 100, G_PARAM_READWRITE));
 
-    g_object_class_install_property(
-        gobject_class, PROP_CLASS_FILTER, g_param_spec_int("class-filter", "Class filter", "Only keep detections of this class (-1 = all)", -1, 1000, -1, G_PARAM_READWRITE));
+	g_object_class_install_property(
+	    gobject_class, PROP_CLASS_FILTER, g_param_spec_int("class-filter", "Class filter", "Only keep detections of this class (-1 = all)", -1, 1000, -1, G_PARAM_READWRITE));
 
-    g_object_class_install_property(
-        gobject_class, PROP_CONFIG_FILE, g_param_spec_string("config-file", "Config file", "Path to TOML config file for property overrides", NULL, G_PARAM_READWRITE));
+	g_object_class_install_property(gobject_class, PROP_CONFIG_FILE, g_param_spec_string("config-file", "Config file", "Path to TOML config file for property overrides", NULL, G_PARAM_READWRITE));
 
-    g_object_class_install_property(
-        gobject_class, PROP_COMPILE_FUNC, g_param_spec_string("compile-function", "Compile function", "Symbol name in addon for model compilation (default: magma_compile)", "magma_compile", G_PARAM_READWRITE));
+	g_object_class_install_property(
+	    gobject_class,
+	    PROP_COMPILE_FUNC,
+	    g_param_spec_string("compile-function", "Compile function", "Symbol name in addon for model compilation (default: magma_compile)", "magma_compile", G_PARAM_READWRITE));
 
-    g_object_class_install_property(
-        gobject_class, PROP_COMPILE_PRECISION, g_param_spec_string("compile-precision", "Compile precision", "FP32, FP16, or INT8 — passed through to the parser addon's magma_compile", "FP32", G_PARAM_READWRITE));
+	g_object_class_install_property(
+	    gobject_class,
+	    PROP_COMPILE_PRECISION,
+	    g_param_spec_string("compile-precision", "Compile precision", "FP32, FP16, or INT8 — passed through to the parser addon's magma_compile", "FP32", G_PARAM_READWRITE));
 
-    g_object_class_install_property(
-        gobject_class, PROP_CALIB_DATA_PATH, g_param_spec_string("calib-data-path", "Calibration data path", "Path to a directory of representative images for INT8 calibration (pased through to the parser addon)", NULL, G_PARAM_READWRITE));
+	g_object_class_install_property(
+	    gobject_class,
+	    PROP_CALIB_DATA_PATH,
+	    g_param_spec_string(
+	        "calib-data-path", "Calibration data path", "Path to a directory of representative images for INT8 calibration (pased through to the parser addon)", NULL, G_PARAM_READWRITE));
 
-    gst_element_class_add_static_pad_template(element_class, &sink_template);
-    gst_element_class_add_static_pad_template(element_class, &src_template);
+	gst_element_class_add_static_pad_template(element_class, &sink_template);
+	gst_element_class_add_static_pad_template(element_class, &src_template);
 
-    gst_element_class_set_static_metadata(element_class, "Magma Inference", "Meta/Inference/Video", "Attaches GPU inference results as buffer metadata (MIGraphX + parser plugins)", "Magma");
+	gst_element_class_set_static_metadata(element_class, "Magma Inference", "Meta/Inference/Video", "Attaches GPU inference results as buffer metadata (MIGraphX + parser plugins)", "Magma");
 
-    trans->set_caps = gst_magma_infer_set_caps;
-    trans->transform_ip = gst_magma_infer_transform_ip;
-    trans->start = gst_magma_infer_start;
-    trans->stop = gst_magma_infer_stop;
-    trans->decide_allocation = gst_magma_infer_decide_allocation;
+	trans->set_caps = gst_magma_infer_set_caps;
+	trans->transform_ip = gst_magma_infer_transform_ip;
+	trans->start = gst_magma_infer_start;
+	trans->stop = gst_magma_infer_stop;
+	trans->decide_allocation = gst_magma_infer_decide_allocation;
 
-    magma_inference_meta_get_info();
-    magma_tensor_meta_get_info();
-    magma_semantic_meta_get_info();
+	magma_inference_meta_get_info();
+	magma_tensor_meta_get_info();
+	magma_semantic_meta_get_info();
 
-    GST_DEBUG_CATEGORY_INIT(magma_infer_debug, "magma_infer", 0, "Magma Inference Plugin");
+	GST_DEBUG_CATEGORY_INIT(magma_infer_debug, "magma_infer", 0, "Magma Inference Plugin");
 }
 
 /** --- DECIDE_ALLOCATION: increase buffer pool min-buffers for GPU pipeline cushion --- */
 static gboolean gst_magma_infer_decide_allocation(GstBaseTransform* trans, GstQuery* query) {
-    GstBufferPool* pool = NULL;
-    GstStructure* config;
-    guint size, min_bufs, max_bufs;
+	GstBufferPool* pool = NULL;
+	GstStructure* config;
+	guint size, min_bufs, max_bufs;
 
-    if (!GST_BASE_TRANSFORM_CLASS(gst_magma_infer_parent_class)->decide_allocation(trans, query))
-        return FALSE;
+	if (!GST_BASE_TRANSFORM_CLASS(gst_magma_infer_parent_class)->decide_allocation(trans, query))
+		return FALSE;
 
-    if (gst_query_get_n_allocation_pools(query) > 0) {
-        gst_query_parse_nth_allocation_pool(query, 0, &pool, &size, &min_bufs, &max_bufs);
+	if (gst_query_get_n_allocation_pools(query) > 0) {
+		gst_query_parse_nth_allocation_pool(query, 0, &pool, &size, &min_bufs, &max_bufs);
 
-        if (pool) {
-            config = gst_buffer_pool_get_config(pool);
+		if (pool) {
+			config = gst_buffer_pool_get_config(pool);
 
-            if (min_bufs < 12)
-                min_bufs = 12;
+			if (min_bufs < 12)
+				min_bufs = 12;
 
-            gst_buffer_pool_config_set_params(config, NULL, size, min_bufs, max_bufs);
-            gst_buffer_pool_set_config(pool, config);
-            gst_object_unref(pool);
-        }
-    }
+			gst_buffer_pool_config_set_params(config, NULL, size, min_bufs, max_bufs);
+			gst_buffer_pool_set_config(pool, config);
+			gst_object_unref(pool);
+		}
+	}
 
-    return TRUE;
+	return TRUE;
 }
 
 /** --- PLUGIN REGISTRATION --- */
 static gboolean plugin_init(GstPlugin* plugin) {
-    return gst_element_register(plugin, "mgminfer", GST_RANK_NONE, GST_TYPE_MAGMA_INFER);
+	return gst_element_register(plugin, "mgminfer", GST_RANK_NONE, GST_TYPE_MAGMA_INFER);
 }
 
 GST_PLUGIN_DEFINE(GST_VERSION_MAJOR, GST_VERSION_MINOR, mgminfer, "Magma Inference Plugin", plugin_init, "0.1.0", "LGPL", "magma", "https://imeguras.eu.org")

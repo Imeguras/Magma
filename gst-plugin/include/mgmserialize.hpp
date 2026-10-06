@@ -26,9 +26,9 @@ G_DECLARE_FINAL_TYPE(GstMagmaSerialize, gst_magma_serialize, GST, MAGMA_SERIALIZ
  *                             N 160x160 instance masks needs N*25600.
  */
 struct _GstMagmaSerialize {
-    GstBaseTransform parent;
-    gchar* format;
-    guint  max_mask_pixels;
+	GstBaseTransform parent;
+	gchar* format;
+	guint max_mask_pixels;
 };
 
 G_END_DECLS

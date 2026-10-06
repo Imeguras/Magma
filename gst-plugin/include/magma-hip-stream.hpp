@@ -20,9 +20,9 @@
  * @return hipStream_t (never null after first call)
  */
 inline hipStream_t magma_get_shared_hip_stream() {
-    static hipStream_t stream = nullptr;
-    if (!stream) {
-        (void)hipStreamCreate(&stream);
-    }
-    return stream;
+	static hipStream_t stream = nullptr;
+	if (!stream) {
+		(void)hipStreamCreate(&stream);
+	}
+	return stream;
 }

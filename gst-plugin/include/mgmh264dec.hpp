@@ -22,8 +22,8 @@ G_DECLARE_FINAL_TYPE(GstMagmaH264Dec, gst_magma_h264_dec, GST, MAGMA_H264_DEC, G
  * @brief A decoded frame awaiting reordering and output.
  */
 typedef struct {
-    GstVideoCodecFrame* frame;
-    int64_t pts_roc;  /**< PTS in rocDecode units (100ns) */
+	GstVideoCodecFrame* frame;
+	int64_t pts_roc; /**< PTS in rocDecode units (100ns) */
 } PendingFrame;
 
 /**
@@ -33,27 +33,27 @@ typedef struct {
  * video frames backed by DMABuf or MagmaHipMeta.
  */
 struct _GstMagmaH264Dec {
-    GstVideoDecoder parent;
+	GstVideoDecoder parent;
 
-    void* roc_decoder;
+	void* roc_decoder;
 
-    PendingFrame pending[MAX_PENDING_FRAMES];
-    gint pending_count;
+	PendingFrame pending[MAX_PENDING_FRAMES];
+	gint pending_count;
 
-    gint width, height;
-    GstVideoFormat output_format;
-    gboolean configured;
+	gint width, height;
+	GstVideoFormat output_format;
+	gboolean configured;
 
-    uint8_t* codec_data;
-    gsize codec_data_size;
+	uint8_t* codec_data;
+	gsize codec_data_size;
 
-    /* Frame buffer pool: avoids hipMalloc/hipFree per frame */
+	/* Frame buffer pool: avoids hipMalloc/hipFree per frame */
 #define FRAME_POOL_SIZE 16
-    GAsyncQueue* pool_free;
+	GAsyncQueue* pool_free;
 
-    /* Reusable bitstream conversion buffers to avoid per-frame malloc */
-    std::vector<uint8_t> bitstream_buf;
-    std::vector<uint8_t> avcc_buf;
+	/* Reusable bitstream conversion buffers to avoid per-frame malloc */
+	std::vector<uint8_t> bitstream_buf;
+	std::vector<uint8_t> avcc_buf;
 };
 
 G_END_DECLS

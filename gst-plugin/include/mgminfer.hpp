@@ -38,64 +38,64 @@ G_DECLARE_FINAL_TYPE(GstMagmaInfer, gst_magma_infer, GST, MAGMA_INFER, GstBaseTr
  * @property max-detections   Maximum detections per frame
  */
 struct _GstMagmaInfer {
-    GstBaseTransform parent;
-    gchar* onnx_model_path;
-    gchar* mxr_model_path;
+	GstBaseTransform parent;
+	gchar* onnx_model_path;
+	gchar* mxr_model_path;
 
-    guint inference_interval;
-    guint frame_counter;
+	guint inference_interval;
+	guint frame_counter;
 
-    gint in_width;
-    gint in_height;
+	gint in_width;
+	gint in_height;
 
-    MagmaInferObjectGPU* d_objects;
-    guint max_objects;
+	MagmaInferObjectGPU* d_objects;
+	guint max_objects;
 
-    float* d_masks_buffer;          /* GPU buffer for compacted mask data */
-    int    d_masks_buffer_bytes;    /* current allocation size */
-    int    d_masks_h;               /* runtime mask height from model output */
-    int    d_masks_w;               /* runtime mask width */
+	float* d_masks_buffer;    /* GPU buffer for compacted mask data */
+	int d_masks_buffer_bytes; /* current allocation size */
+	int d_masks_h;            /* runtime mask height from model output */
+	int d_masks_w;            /* runtime mask width */
 
-    int* d_num_det;
+	int* d_num_det;
 
-    hipStream_t hip_stream;
+	hipStream_t hip_stream;
 
-    hipModule_t kernel_module;
-    hipFunction_t kernel_dummy;
-    gboolean kernel_ready;
+	hipModule_t kernel_module;
+	hipFunction_t kernel_dummy;
+	gboolean kernel_ready;
 
-    void* migraphx_model;
-    gboolean model_loaded;
+	void* migraphx_model;
+	gboolean model_loaded;
 
-    gchar* parser_plugin_path;
-    gchar* parser_func_name;
-    void* parser_handle;
-    MagmaParseFunc parser_func;
+	gchar* parser_plugin_path;
+	gchar* parser_func_name;
+	void* parser_handle;
+	MagmaParseFunc parser_func;
 
-    /* compile hook */
-    gchar* compile_func_name;
-    MagmaCompileFunc compile_func;
+	/* compile hook */
+	gchar* compile_func_name;
+	MagmaCompileFunc compile_func;
 
-    /* compile options (passed through to addon's magma_compile) */
-    gchar* compile_precision;
-    gchar* calib_data_path;
+	/* compile options (passed through to addon's magma_compile) */
+	gchar* compile_precision;
+	gchar* calib_data_path;
 
-    /* to_primitives hook (optional, discovered at parser load) */
-    MagmaToPrimitivesFunc to_primitives_func;
-    gchar* semantic_type_str;           /* from magma_semantic_type symbol */
-    gboolean to_primitives_exported;
+	/* to_primitives hook (optional, discovered at parser load) */
+	MagmaToPrimitivesFunc to_primitives_func;
+	gchar* semantic_type_str; /* from magma_semantic_type symbol */
+	gboolean to_primitives_exported;
 
-    gchar* config_file;
-    float confidence_thresh;
-    float nms_thresh;
-    guint max_detections;
+	gchar* config_file;
+	float confidence_thresh;
+	float nms_thresh;
+	guint max_detections;
 
-    gint class_filter;
+	gint class_filter;
 
-    GstMemory* cached_tensor_mem;
-    hipExternalMemory_t cached_tensor_ext;
-    hipDeviceptr_t cached_tensor_dptr;
-    void* gpu_ctx;
+	GstMemory* cached_tensor_mem;
+	hipExternalMemory_t cached_tensor_ext;
+	hipDeviceptr_t cached_tensor_dptr;
+	void* gpu_ctx;
 };
 
 G_END_DECLS

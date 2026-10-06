@@ -2,9 +2,8 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: ['**']
   pull_request:
-    branches: [master]
 
 jobs:
   build:
@@ -13,35 +12,133 @@ jobs:
       image: debian:bookworm-slim
 
     steps:
-      - uses: actions/checkout@v4
-
       - name: Install build dependencies
         run: |
           apt-get update && apt-get install -y \
             build-essential cmake meson ninja-build pkg-config python3 \
-            wget gpg ca-certificates
+            wget gpg ca-certificates git curl gcovr
           wget -q -O - https://repo.radeon.com/rocm/rocm.gpg.key \
             | gpg --dearmor -o /etc/apt/keyrings/rocm.gpg
           echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] \
             https://repo.radeon.com/rocm/apt/7.2.3 jammy main" \
             > /etc/apt/sources.list.d/rocm.list
+          echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] \
+            https://repo.radeon.com/graphics/7.2.3/ubuntu jammy main" \
+            >> /etc/apt/sources.list.d/rocm.list
+          printf 'Package: *\nPin: release o=repo.radeon.com\nPin-Priority: 1001\n' \
+            > /etc/apt/preferences.d/rocm
           apt-get update && apt-get install -y \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
             libgstreamer-plugins-bad1.0-dev gstreamer1.0-tools \
             rocm-hip-runtime-dev rocm-device-libs rocm-cmake \
-            libdrm-dev libgbm-dev
+            migraphx-dev rocdecode-dev roctracer-dev rocprofiler-sdk-roctx \
+            libdrm-dev libgbm-dev libtomlplusplus-dev \
+            libepoxy-dev libxcb1-dev libxcb-util-dev
+          # Debian header layout differs from upstream/Arch
+          ln -sf toml.h /usr/include/toml++/toml.hpp
+          [ -e /usr/include/drm ] || ln -s libdrm /usr/include/drm
+          echo "/opt/rocm/bin" >> "$GITHUB_PATH"
           rm -rf /var/lib/apt/lists/*
 
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Mark workspace safe for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       - name: Configure
-        run: meson setup build --buildtype=release
+        run: meson setup build --buildtype=debug -Db_coverage=true
 
       - name: Build
         run: meson compile -C build
 
+      - name: Test (CPU only)
+        run: meson test -C build --no-suite gpu --print-errorlogs
+
+      - name: Coverage report
+        run: |
+          gcovr -r . build \
+            --filter gst-plugin/ --exclude gst-plugin/tests/ \
+            --exclude-unreachable-branches --exclude-throw-branches \
+            --cobertura coverage.xml --json-summary summary.json --print-summary
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.xml
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+      - name: Generate badge data
+        run: |
+          VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo untagged)
+          mkdir -p badge-data
+          python3 - "$VERSION" <<'EOF'
+          import json, sys
+          version = sys.argv[1]
+          pct = json.load(open("summary.json")).get("branch_percent") or 0.0
+          color = "brightgreen" if pct >= 80 else "yellow" if pct >= 60 else "orange" if pct >= 40 else "red"
+          def write(name, label, message, color):
+              json.dump({"schemaVersion": 1, "label": label, "message": message, "color": color},
+                        open(f"badge-data/{name}.json", "w"))
+          write("version", "version", version, "blue")
+          write("branch-coverage", "branch coverage", f"{pct:.1f}%", color)
+          EOF
+          cat badge-data/*.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: badge-data
+          path: badge-data/
+
+  badges:
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push'
+    permissions:
+      contents: write
+    concurrency:
+      group: badges
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: badge-data
+          path: badge-data
+
+      - name: Publish to badges branch
+        env:
+          BRANCH: ${{ github.ref_name }}
+          REPO_URL: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          if git clone --depth 1 --branch badges "$REPO_URL" badges-repo 2>/dev/null; then
+            cd badges-repo
+          else
+            git init badges-repo && cd badges-repo
+            git checkout --orphan badges
+            git remote add origin "$REPO_URL"
+          fi
+          mkdir -p "$BRANCH"
+          cp ../badge-data/*.json "$BRANCH/"
+          git add -A
+          git diff --cached --quiet && { echo "No badge changes"; exit 0; }
+          git commit -m "Update badges for $BRANCH (${GITHUB_SHA::7})"
+          for i in 1 2 3; do
+            git push origin badges && exit 0
+            git pull --rebase origin badges || true
+          done
+          exit 1
+
   docs:
     runs-on: ubuntu-latest
     needs: build
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v4

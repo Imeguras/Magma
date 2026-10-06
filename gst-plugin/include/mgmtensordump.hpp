@@ -31,29 +31,29 @@ G_DECLARE_FINAL_TYPE(GstMagmaTensorDump, gst_magma_tensor_dump, GST, MAGMA_TENSO
  * @property frame-skip     Dump every N frames (default 1)
  */
 struct _GstMagmaTensorDump {
-    GstBaseTransform parent;
+	GstBaseTransform parent;
 
-    gint net_width;
-    gint net_height;
-    gchar* dump_location;
-    gint frame_skip;
+	gint net_width;
+	gint net_height;
+	gchar* dump_location;
+	gint frame_skip;
 
-    gint in_width;
-    gint in_height;
+	gint in_width;
+	gint in_height;
 
-    hipStream_t hip_stream;
-    hipExternalMemory_t tensor_ext_mem;
-    hipDeviceptr_t d_tensor;
-    gboolean tensor_imported;
+	hipStream_t hip_stream;
+	hipExternalMemory_t tensor_ext_mem;
+	hipDeviceptr_t d_tensor;
+	gboolean tensor_imported;
 
-    float* host_tensor;
-    gsize tensor_bytes;
+	float* host_tensor;
+	gsize tensor_bytes;
 
-    gint panel_w;
-    gint panel_h;
+	gint panel_w;
+	gint panel_h;
 
-    FILE* dump_file;
-    guint64 frame_num;
+	FILE* dump_file;
+	guint64 frame_num;
 };
 
 G_END_DECLS

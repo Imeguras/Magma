@@ -7,48 +7,48 @@ extern "C" {
 #endif
 
 typedef struct {
-    int    class_id;
-    float  confidence;
-    float  x, y, w, h;
+	int class_id;
+	float confidence;
+	float x, y, w, h;
 } MagmaParsedObject;
 
 typedef struct {
-    const void*    d_raw_output;
-    const int64_t* output_shape;
-    int            num_dims;
+	const void* d_raw_output;
+	const int64_t* output_shape;
+	int num_dims;
 
-    int            num_raw_outputs;
-    const void**   d_raw_outputs;
-    const int64_t** output_shapes;
-    const int*     num_dims_list;
+	int num_raw_outputs;
+	const void** d_raw_outputs;
+	const int64_t** output_shapes;
+	const int* num_dims_list;
 
-    int            net_width;
-    int            net_height;
+	int net_width;
+	int net_height;
 
-    float          confidence_thresh;
-    float          nms_thresh;
-    int            max_detections;
+	float confidence_thresh;
+	float nms_thresh;
+	int max_detections;
 
-    void*          d_objects;
-    int*           d_num_detected;
+	void* d_objects;
+	int* d_num_detected;
 
-    void*          d_masks;
-    int            mask_h;
-    int            mask_w;
+	void* d_masks;
+	int mask_h;
+	int mask_w;
 
-    void*          stream;
+	void* stream;
 } MagmaParseParams;
 
 typedef int (*MagmaParseFunc)(MagmaParseParams* params);
 
 typedef struct {
-    const char*  onnx_path;
-    const char*  mxr_output_path;
-    int          device_id;
-    const char*  precision;
-    const char*  calib_data_path;
-    int          batch_size;
-    const char*  const* extras;
+	const char* onnx_path;
+	const char* mxr_output_path;
+	int device_id;
+	const char* precision;
+	const char* calib_data_path;
+	int batch_size;
+	const char* const* extras;
 } MagmaCompileParams;
 
 typedef int (*MagmaCompileFunc)(const MagmaCompileParams* params);

@@ -35,43 +35,43 @@ namespace magma {
  * @endcode
  */
 class Config {
-public:
-    Config();
-    ~Config();
+  public:
+	Config();
+	~Config();
 
-    Config(const Config&) = delete;
-    Config& operator=(const Config&) = delete;
-    Config(Config&&) = default;
-    Config& operator=(Config&&) = default;
+	Config(const Config&) = delete;
+	Config& operator=(const Config&) = delete;
+	Config(Config&&) = default;
+	Config& operator=(Config&&) = default;
 
-    /**
-     * @brief Parse a TOML file from disk.
-     * @param filepath Path to the .toml file
-     * @return true on success
-     */
-    bool load(const std::string& filepath);
+	/**
+	 * @brief Parse a TOML file from disk.
+	 * @param filepath Path to the .toml file
+	 * @return true on success
+	 */
+	bool load(const std::string& filepath);
 
-    /**
-     * @brief Check whether a named section exists.
-     */
-    bool has_section(const std::string& name) const;
+	/**
+	 * @brief Check whether a named section exists.
+	 */
+	bool has_section(const std::string& name) const;
 
-    /**
-     * @brief Apply every key-value pair under [section] as GObject properties.
-     *
-     * Each TOML key is converted to a GObject property name (hyphens preserved).
-     * Values are set via gst_util_set_object_arg() which handles int, float,
-     * bool, string, enum, and flags automatically.
-     *
-     * @param element Target GstElement
-     * @param section TOML section name (e.g., "mgminfer")
-     * @return true if at least one property was applied
-     */
-    bool apply(GstElement* element, const std::string& section) const;
+	/**
+	 * @brief Apply every key-value pair under [section] as GObject properties.
+	 *
+	 * Each TOML key is converted to a GObject property name (hyphens preserved).
+	 * Values are set via gst_util_set_object_arg() which handles int, float,
+	 * bool, string, enum, and flags automatically.
+	 *
+	 * @param element Target GstElement
+	 * @param section TOML section name (e.g., "mgminfer")
+	 * @return true if at least one property was applied
+	 */
+	bool apply(GstElement* element, const std::string& section) const;
 
-private:
-    struct Impl;
-    std::unique_ptr<Impl> impl_;
+  private:
+	struct Impl;
+	std::unique_ptr<Impl> impl_;
 };
 
 } // namespace magma

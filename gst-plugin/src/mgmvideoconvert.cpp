@@ -17,7 +17,7 @@ GST_DEBUG_CATEGORY_STATIC(magma_videoconvert_debug);
 #define GST_CAT_DEFAULT magma_videoconvert_debug
 
 enum {
-    PROP_0,
+	PROP_0,
 };
 
 G_DEFINE_TYPE(GstMagmaVideoConvert, gst_magma_videoconvert, GST_TYPE_BASE_TRANSFORM)
@@ -25,116 +25,115 @@ G_DEFINE_TYPE(GstMagmaVideoConvert, gst_magma_videoconvert, GST_TYPE_BASE_TRANSF
 /** --- GBM BACKED DMABUF ALLOCATOR --- */
 
 static gboolean create_gpu_dmabuf(GstMagmaVideoConvert* self) {
-    // 1) Open DRM render node
-    const char* drm_path = nullptr;
-    for (int i = 0; i < 64; i++) {
-        char path[64];
-        snprintf(path, sizeof(path), "/dev/dri/renderD%d", 128 + i);
-        int fd = open(path, O_RDWR);
-        if (fd < 0)
-            continue;
-        drmVersionPtr ver = drmGetVersion(fd);
-        if (ver) {
-            GST_INFO_OBJECT(self, "DRM node %s: %s", path, ver->name);
-            drmFreeVersion(ver);
-            self->drm_fd = fd;
-            drm_path = path;
-            break;
-        }
-        close(fd);
-    }
-    if (self->drm_fd < 0) {
-        GST_ERROR_OBJECT(self, "No usable DRM render node found");
-        return FALSE;
-    }
+	// 1) Open DRM render node
+	const char* drm_path = nullptr;
+	for (int i = 0; i < 64; i++) {
+		char path[64];
+		snprintf(path, sizeof(path), "/dev/dri/renderD%d", 128 + i);
+		int fd = open(path, O_RDWR);
+		if (fd < 0)
+			continue;
+		drmVersionPtr ver = drmGetVersion(fd);
+		if (ver) {
+			GST_INFO_OBJECT(self, "DRM node %s: %s", path, ver->name);
+			drmFreeVersion(ver);
+			self->drm_fd = fd;
+			drm_path = path;
+			break;
+		}
+		close(fd);
+	}
+	if (self->drm_fd < 0) {
+		GST_ERROR_OBJECT(self, "No usable DRM render node found");
+		return FALSE;
+	}
 
-    // 2) Create GBM device
-    self->gbm_dev = gbm_create_device(self->drm_fd);
-    if (!self->gbm_dev) {
-        GST_ERROR_OBJECT(self, "gbm_create_device failed");
-        close(self->drm_fd);
-        self->drm_fd = -1;
-        return FALSE;
-    }
-    GST_INFO_OBJECT(self, "GBM device created from %s", drm_path);
+	// 2) Create GBM device
+	self->gbm_dev = gbm_create_device(self->drm_fd);
+	if (!self->gbm_dev) {
+		GST_ERROR_OBJECT(self, "gbm_create_device failed");
+		close(self->drm_fd);
+		self->drm_fd = -1;
+		return FALSE;
+	}
+	GST_INFO_OBJECT(self, "GBM device created from %s", drm_path);
 
-    // 3) Allocate GBM BO. Layout depends on the negotiated output format:
-    //    - BGRx: packed XRGB8888, one plane of `height` rows.
-    //    - NV12: R8 with height*3/2 rows so Y and UV share one BO.
-    //      gbm_bo_get_stride returns the aligned stride (e.g. 768 for width 640),
-    //      so total size = stride * height * 3/2.
-    const gboolean packed_rgb = (self->out_format == GST_VIDEO_FORMAT_BGRx);
-    guint bo_height = packed_rgb ? (guint)self->in_height : (guint)(self->in_height * 3 / 2);
-    guint32 bo_format = packed_rgb ? GBM_FORMAT_XRGB8888 : GBM_FORMAT_R8;
+	// 3) Allocate GBM BO. Layout depends on the negotiated output format:
+	//    - BGRx: packed XRGB8888, one plane of `height` rows.
+	//    - NV12: R8 with height*3/2 rows so Y and UV share one BO.
+	//      gbm_bo_get_stride returns the aligned stride (e.g. 768 for width 640),
+	//      so total size = stride * height * 3/2.
+	const gboolean packed_rgb = (self->out_format == GST_VIDEO_FORMAT_BGRx);
+	guint bo_height = packed_rgb ? (guint)self->in_height : (guint)(self->in_height * 3 / 2);
+	guint32 bo_format = packed_rgb ? GBM_FORMAT_XRGB8888 : GBM_FORMAT_R8;
 
-    self->gbm_bo = gbm_bo_create(self->gbm_dev, self->in_width, bo_height, bo_format, GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR);
-    if (!self->gbm_bo) {
-        GST_ERROR_OBJECT(self, "gbm_bo_create(%dx%d, %s) failed", self->in_width, bo_height, packed_rgb ? "XRGB8888" : "R8");
-        gbm_device_destroy(self->gbm_dev);
-        self->gbm_dev = nullptr;
-        close(self->drm_fd);
-        self->drm_fd = -1;
-        return FALSE;
-    }
+	self->gbm_bo = gbm_bo_create(self->gbm_dev, self->in_width, bo_height, bo_format, GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR);
+	if (!self->gbm_bo) {
+		GST_ERROR_OBJECT(self, "gbm_bo_create(%dx%d, %s) failed", self->in_width, bo_height, packed_rgb ? "XRGB8888" : "R8");
+		gbm_device_destroy(self->gbm_dev);
+		self->gbm_dev = nullptr;
+		close(self->drm_fd);
+		self->drm_fd = -1;
+		return FALSE;
+	}
 
-    self->gbm_stride = gbm_bo_get_stride(self->gbm_bo);
-    self->gpu_size = packed_rgb ? (gsize)self->gbm_stride * self->in_height : (gsize)self->gbm_stride * self->in_height * 3 / 2;
-    GST_INFO_OBJECT(self, "GBM BO created: %dx%d %s stride=%d size=%zu", self->in_width, self->in_height, packed_rgb ? "BGRx" : "NV12", self->gbm_stride,
-                    self->gpu_size);
+	self->gbm_stride = gbm_bo_get_stride(self->gbm_bo);
+	self->gpu_size = packed_rgb ? (gsize)self->gbm_stride * self->in_height : (gsize)self->gbm_stride * self->in_height * 3 / 2;
+	GST_INFO_OBJECT(self, "GBM BO created: %dx%d %s stride=%d size=%zu", self->in_width, self->in_height, packed_rgb ? "BGRx" : "NV12", self->gbm_stride, self->gpu_size);
 
-    // 4) Export BO as DMABuf fd
-    int bo_fd = gbm_bo_get_fd(self->gbm_bo);
-    if (bo_fd < 0) {
-        GST_ERROR_OBJECT(self, "gbm_bo_get_fd failed");
-        gbm_bo_destroy(self->gbm_bo);
-        self->gbm_bo = nullptr;
-        gbm_device_destroy(self->gbm_dev);
-        self->gbm_dev = nullptr;
-        close(self->drm_fd);
-        self->drm_fd = -1;
-        return FALSE;
-    }
+	// 4) Export BO as DMABuf fd
+	int bo_fd = gbm_bo_get_fd(self->gbm_bo);
+	if (bo_fd < 0) {
+		GST_ERROR_OBJECT(self, "gbm_bo_get_fd failed");
+		gbm_bo_destroy(self->gbm_bo);
+		self->gbm_bo = nullptr;
+		gbm_device_destroy(self->gbm_dev);
+		self->gbm_dev = nullptr;
+		close(self->drm_fd);
+		self->drm_fd = -1;
+		return FALSE;
+	}
 
-    // 5) Import DMABuf into HIP
-    hipExternalMemoryHandleDesc desc{};
-    desc.type = hipExternalMemoryHandleTypeOpaqueFd;
-    desc.handle.fd = bo_fd;
-    desc.size = self->gpu_size;
+	// 5) Import DMABuf into HIP
+	hipExternalMemoryHandleDesc desc{};
+	desc.type = hipExternalMemoryHandleTypeOpaqueFd;
+	desc.handle.fd = bo_fd;
+	desc.size = self->gpu_size;
 
-    hipError_t err = hipImportExternalMemory(&self->ext_mem, &desc);
-    close(bo_fd);
-    if (err != hipSuccess) {
-        GST_ERROR_OBJECT(self, "hipImportExternalMemory failed: %s", hipGetErrorString(err));
-        gbm_bo_destroy(self->gbm_bo);
-        self->gbm_bo = nullptr;
-        gbm_device_destroy(self->gbm_dev);
-        self->gbm_dev = nullptr;
-        close(self->drm_fd);
-        self->drm_fd = -1;
-        return FALSE;
-    }
+	hipError_t err = hipImportExternalMemory(&self->ext_mem, &desc);
+	close(bo_fd);
+	if (err != hipSuccess) {
+		GST_ERROR_OBJECT(self, "hipImportExternalMemory failed: %s", hipGetErrorString(err));
+		gbm_bo_destroy(self->gbm_bo);
+		self->gbm_bo = nullptr;
+		gbm_device_destroy(self->gbm_dev);
+		self->gbm_dev = nullptr;
+		close(self->drm_fd);
+		self->drm_fd = -1;
+		return FALSE;
+	}
 
-    hipExternalMemoryBufferDesc bdesc{};
-    bdesc.offset = 0;
-    bdesc.size = self->gpu_size;
+	hipExternalMemoryBufferDesc bdesc{};
+	bdesc.offset = 0;
+	bdesc.size = self->gpu_size;
 
-    err = hipExternalMemoryGetMappedBuffer(&self->d_image, self->ext_mem, &bdesc);
-    if (err != hipSuccess) {
-        GST_ERROR_OBJECT(self, "hipExternalMemoryGetMappedBuffer failed: %s", hipGetErrorString(err));
-        (void)hipDestroyExternalMemory(self->ext_mem);
-        self->ext_mem = nullptr;
-        gbm_bo_destroy(self->gbm_bo);
-        self->gbm_bo = nullptr;
-        gbm_device_destroy(self->gbm_dev);
-        self->gbm_dev = nullptr;
-        close(self->drm_fd);
-        self->drm_fd = -1;
-        return FALSE;
-    }
+	err = hipExternalMemoryGetMappedBuffer(&self->d_image, self->ext_mem, &bdesc);
+	if (err != hipSuccess) {
+		GST_ERROR_OBJECT(self, "hipExternalMemoryGetMappedBuffer failed: %s", hipGetErrorString(err));
+		(void)hipDestroyExternalMemory(self->ext_mem);
+		self->ext_mem = nullptr;
+		gbm_bo_destroy(self->gbm_bo);
+		self->gbm_bo = nullptr;
+		gbm_device_destroy(self->gbm_dev);
+		self->gbm_dev = nullptr;
+		close(self->drm_fd);
+		self->drm_fd = -1;
+		return FALSE;
+	}
 
-    self->gpu_ready = TRUE;
-    GST_INFO_OBJECT(self, "GPU DMABuf ready: fd=%d mapped=%p", bo_fd, (void*)self->d_image);
-    return TRUE;
+	self->gpu_ready = TRUE;
+	GST_INFO_OBJECT(self, "GPU DMABuf ready: fd=%d mapped=%p", bo_fd, (void*)self->d_image);
+	return TRUE;
 }
 
 /** --- PAD TEMPLATES --- */
@@ -157,91 +156,91 @@ static GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE("src",
 
 /** --- INIT --- */
 static void gst_magma_videoconvert_init(GstMagmaVideoConvert* self) {
-    self->in_width = 0;
-    self->in_height = 0;
-    self->in_stride = 0;
-    self->in_format = GST_VIDEO_FORMAT_UNKNOWN;
-    self->out_format = GST_VIDEO_FORMAT_UNKNOWN;
-    self->convert = nullptr;
+	self->in_width = 0;
+	self->in_height = 0;
+	self->in_stride = 0;
+	self->in_format = GST_VIDEO_FORMAT_UNKNOWN;
+	self->out_format = GST_VIDEO_FORMAT_UNKNOWN;
+	self->convert = nullptr;
 
-    self->drm_fd = -1;
-    self->gbm_dev = nullptr;
-    self->gbm_bo = nullptr;
-    self->gbm_stride = 0;
+	self->drm_fd = -1;
+	self->gbm_dev = nullptr;
+	self->gbm_bo = nullptr;
+	self->gbm_stride = 0;
 
-    self->ext_mem = nullptr;
-    self->d_image = 0;
-    self->gpu_size = 0;
-    self->hip_stream = nullptr;
-    self->gpu_ready = FALSE;
-    self->kernel_module = nullptr;
-    self->kernel_func = nullptr;
-    self->kernel_ready = FALSE;
-    self->rgb_module = nullptr;
-    self->rgb_func = nullptr;
-    self->rgb_ready = FALSE;
-    self->d_scratch = 0;
-    self->scratch_size = 0;
-    self->scratch_stride = 0;
+	self->ext_mem = nullptr;
+	self->d_image = 0;
+	self->gpu_size = 0;
+	self->hip_stream = nullptr;
+	self->gpu_ready = FALSE;
+	self->kernel_module = nullptr;
+	self->kernel_func = nullptr;
+	self->kernel_ready = FALSE;
+	self->rgb_module = nullptr;
+	self->rgb_func = nullptr;
+	self->rgb_ready = FALSE;
+	self->d_scratch = 0;
+	self->scratch_size = 0;
+	self->scratch_stride = 0;
 
-    self->hip_stream = magma_get_shared_hip_stream();
+	self->hip_stream = magma_get_shared_hip_stream();
 }
 
 /** --- FINALIZE --- */
 static void gst_magma_videoconvert_finalize(GObject* object) {
-    GstMagmaVideoConvert* self = GST_MAGMA_VIDEOCONVERT(object);
+	GstMagmaVideoConvert* self = GST_MAGMA_VIDEOCONVERT(object);
 
-    if (self->ext_mem) {
-        (void)hipDestroyExternalMemory(self->ext_mem);
-        self->ext_mem = nullptr;
-        self->d_image = 0;
-    }
-    if (self->gbm_bo) {
-        gbm_bo_destroy(self->gbm_bo);
-        self->gbm_bo = nullptr;
-    }
-    if (self->gbm_dev) {
-        gbm_device_destroy(self->gbm_dev);
-        self->gbm_dev = nullptr;
-    }
-    if (self->kernel_module) {
-        (void)hipModuleUnload(self->kernel_module);
-        self->kernel_module = nullptr;
-        self->kernel_func = nullptr;
-    }
-    if (self->rgb_module) {
-        (void)hipModuleUnload(self->rgb_module);
-        self->rgb_module = nullptr;
-        self->rgb_func = nullptr;
-    }
-    if (self->d_scratch) {
-        (void)hipFree((void*)self->d_scratch);
-        self->d_scratch = 0;
-        self->scratch_size = 0;
-    }
-    if (self->drm_fd >= 0) {
-        close(self->drm_fd);
-        self->drm_fd = -1;
-    }
+	if (self->ext_mem) {
+		(void)hipDestroyExternalMemory(self->ext_mem);
+		self->ext_mem = nullptr;
+		self->d_image = 0;
+	}
+	if (self->gbm_bo) {
+		gbm_bo_destroy(self->gbm_bo);
+		self->gbm_bo = nullptr;
+	}
+	if (self->gbm_dev) {
+		gbm_device_destroy(self->gbm_dev);
+		self->gbm_dev = nullptr;
+	}
+	if (self->kernel_module) {
+		(void)hipModuleUnload(self->kernel_module);
+		self->kernel_module = nullptr;
+		self->kernel_func = nullptr;
+	}
+	if (self->rgb_module) {
+		(void)hipModuleUnload(self->rgb_module);
+		self->rgb_module = nullptr;
+		self->rgb_func = nullptr;
+	}
+	if (self->d_scratch) {
+		(void)hipFree((void*)self->d_scratch);
+		self->d_scratch = 0;
+		self->scratch_size = 0;
+	}
+	if (self->drm_fd >= 0) {
+		close(self->drm_fd);
+		self->drm_fd = -1;
+	}
 
-    G_OBJECT_CLASS(gst_magma_videoconvert_parent_class)->finalize(object);
+	G_OBJECT_CLASS(gst_magma_videoconvert_parent_class)->finalize(object);
 }
 
 /** --- PROPERTIES --- */
 static void gst_magma_videoconvert_set_property(GObject* object, guint prop_id, const GValue* value, GParamSpec* pspec) {
-    switch (prop_id) {
-    default:
-        G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
-        break;
-    }
+	switch (prop_id) {
+	default:
+		G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
+		break;
+	}
 }
 
 static void gst_magma_videoconvert_get_property(GObject* object, guint prop_id, GValue* value, GParamSpec* pspec) {
-    switch (prop_id) {
-    default:
-        G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
-        break;
-    }
+	switch (prop_id) {
+	default:
+		G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
+		break;
+	}
 }
 
 // ─── Converter forward declarations ─────────────────────────────────
@@ -267,201 +266,201 @@ static const int convert_table_count = sizeof(convert_table) / sizeof(convert_ta
 
 // ─── Helpers: detect memory type from caps ──────────────────────────
 static MgmMemType mem_type_from_caps(GstCaps* caps) {
-    GstCapsFeatures* f = gst_caps_get_features(caps, 0);
-    if (gst_caps_features_contains(f, GST_CAPS_FEATURE_MEMORY_DMABUF))
-        return MGM_MEM_DMABUF;
-    return MGM_MEM_SYSTEM;
+	GstCapsFeatures* f = gst_caps_get_features(caps, 0);
+	if (gst_caps_features_contains(f, GST_CAPS_FEATURE_MEMORY_DMABUF))
+		return MGM_MEM_DMABUF;
+	return MGM_MEM_SYSTEM;
 }
 
 /** --- CAPS NEGOTIATION --- */
 static GstCaps* gst_magma_videoconvert_transform_caps(GstBaseTransform* trans, GstPadDirection direction, GstCaps* caps, GstCaps* filter) {
 
-    GstCaps* orig = gst_caps_copy(caps);
-    GstCaps* other = gst_caps_copy(caps);
+	GstCaps* orig = gst_caps_copy(caps);
+	GstCaps* other = gst_caps_copy(caps);
 
-    // Toggle DMABuf/system memory type on 'other'
-    for (guint i = 0; i < gst_caps_get_size(other); i++) {
-        GstCapsFeatures* f = gst_caps_get_features(other, i);
-        if (!f || gst_caps_features_is_any(f))
-            continue;
-        if (gst_caps_features_contains(f, GST_CAPS_FEATURE_MEMORY_DMABUF))
-            gst_caps_features_remove(f, GST_CAPS_FEATURE_MEMORY_DMABUF);
-        else {
-            gst_caps_features_remove(f, GST_CAPS_FEATURE_MEMORY_SYSTEM_MEMORY);
-            gst_caps_features_add(f, GST_CAPS_FEATURE_MEMORY_DMABUF);
-        }
-    }
+	// Toggle DMABuf/system memory type on 'other'
+	for (guint i = 0; i < gst_caps_get_size(other); i++) {
+		GstCapsFeatures* f = gst_caps_get_features(other, i);
+		if (!f || gst_caps_features_is_any(f))
+			continue;
+		if (gst_caps_features_contains(f, GST_CAPS_FEATURE_MEMORY_DMABUF))
+			gst_caps_features_remove(f, GST_CAPS_FEATURE_MEMORY_DMABUF);
+		else {
+			gst_caps_features_remove(f, GST_CAPS_FEATURE_MEMORY_SYSTEM_MEMORY);
+			gst_caps_features_add(f, GST_CAPS_FEATURE_MEMORY_DMABUF);
+		}
+	}
 
-    GstCaps* result = gst_caps_merge(orig, other);
+	GstCaps* result = gst_caps_merge(orig, other);
 
-    // Add format conversion variants, preserving width/height/framerate.
-    // Both system and DMABuf flavours are offered; GstBaseTransform
-    // intersects the result with the pad template, so formats we cannot
-    // actually consume/produce on a given pad are dropped automatically.
-    GstStructure* s = gst_caps_get_structure(caps, 0);
-    const gchar* fmt = gst_structure_get_string(s, "format");
-    if (fmt) {
-        static const struct {
-            const char* from;
-            const char* to[3];
-        } variants[] = {
-            {"I420", {"NV12", nullptr, nullptr}},
-            {"NV12", {"I420", "BGRx", nullptr}},
-            {"BGRx", {"NV12", "I420", nullptr}},
-        };
-        for (const auto& v : variants) {
-            if (g_strcmp0(fmt, v.from) != 0)
-                continue;
-            for (int i = 0; i < 3 && v.to[i]; i++) {
-                GstCaps* sys = gst_caps_new_empty();
-                GstStructure* ss = gst_structure_copy(s);
-                gst_structure_set(ss, "format", G_TYPE_STRING, v.to[i], NULL);
-                gst_caps_append_structure(sys, ss);
-                result = gst_caps_merge(result, sys);
+	// Add format conversion variants, preserving width/height/framerate.
+	// Both system and DMABuf flavours are offered; GstBaseTransform
+	// intersects the result with the pad template, so formats we cannot
+	// actually consume/produce on a given pad are dropped automatically.
+	GstStructure* s = gst_caps_get_structure(caps, 0);
+	const gchar* fmt = gst_structure_get_string(s, "format");
+	if (fmt) {
+		static const struct {
+			const char* from;
+			const char* to[3];
+		} variants[] = {
+		    {"I420", {"NV12", nullptr, nullptr}},
+		    {"NV12", {"I420", "BGRx", nullptr}},
+		    {"BGRx", {"NV12", "I420", nullptr}},
+		};
+		for (const auto& v : variants) {
+			if (g_strcmp0(fmt, v.from) != 0)
+				continue;
+			for (int i = 0; i < 3 && v.to[i]; i++) {
+				GstCaps* sys = gst_caps_new_empty();
+				GstStructure* ss = gst_structure_copy(s);
+				gst_structure_set(ss, "format", G_TYPE_STRING, v.to[i], NULL);
+				gst_caps_append_structure(sys, ss);
+				result = gst_caps_merge(result, sys);
 
-                GstCaps* dma = gst_caps_new_empty();
-                GstStructure* ds = gst_structure_copy(s);
-                gst_structure_set(ds, "format", G_TYPE_STRING, v.to[i], NULL);
-                gst_caps_append_structure(dma, ds);
-                gst_caps_set_features(dma, 0, gst_caps_features_new(GST_CAPS_FEATURE_MEMORY_DMABUF, NULL));
-                result = gst_caps_merge(result, dma);
-            }
-            break;
-        }
-    }
+				GstCaps* dma = gst_caps_new_empty();
+				GstStructure* ds = gst_structure_copy(s);
+				gst_structure_set(ds, "format", G_TYPE_STRING, v.to[i], NULL);
+				gst_caps_append_structure(dma, ds);
+				gst_caps_set_features(dma, 0, gst_caps_features_new(GST_CAPS_FEATURE_MEMORY_DMABUF, NULL));
+				result = gst_caps_merge(result, dma);
+			}
+			break;
+		}
+	}
 
-    if (filter) {
-        GstCaps* tmp = gst_caps_intersect_full(result, filter, GST_CAPS_INTERSECT_FIRST);
-        gst_caps_unref(result);
-        result = tmp;
-    }
+	if (filter) {
+		GstCaps* tmp = gst_caps_intersect_full(result, filter, GST_CAPS_INTERSECT_FIRST);
+		gst_caps_unref(result);
+		result = tmp;
+	}
 
-    return result;
+	return result;
 }
 
 static gboolean gst_magma_videoconvert_set_caps(GstBaseTransform* trans, GstCaps* incaps, GstCaps* outcaps) {
 
-    GstMagmaVideoConvert* self = GST_MAGMA_VIDEOCONVERT(trans);
-    GstVideoInfo in_info, out_info;
+	GstMagmaVideoConvert* self = GST_MAGMA_VIDEOCONVERT(trans);
+	GstVideoInfo in_info, out_info;
 
-    if (!gst_video_info_from_caps(&in_info, incaps) || !gst_video_info_from_caps(&out_info, outcaps)) {
-        GST_ERROR_OBJECT(self, "Failed to parse caps");
-        return FALSE;
-    }
+	if (!gst_video_info_from_caps(&in_info, incaps) || !gst_video_info_from_caps(&out_info, outcaps)) {
+		GST_ERROR_OBJECT(self, "Failed to parse caps");
+		return FALSE;
+	}
 
-    self->in_width = GST_VIDEO_INFO_WIDTH(&in_info);
-    self->in_height = GST_VIDEO_INFO_HEIGHT(&in_info);
-    self->in_stride = GST_VIDEO_INFO_PLANE_STRIDE(&in_info, 0);
-    self->in_format = GST_VIDEO_INFO_FORMAT(&in_info);
-    self->out_format = GST_VIDEO_INFO_FORMAT(&out_info);
+	self->in_width = GST_VIDEO_INFO_WIDTH(&in_info);
+	self->in_height = GST_VIDEO_INFO_HEIGHT(&in_info);
+	self->in_stride = GST_VIDEO_INFO_PLANE_STRIDE(&in_info, 0);
+	self->in_format = GST_VIDEO_INFO_FORMAT(&in_info);
+	self->out_format = GST_VIDEO_INFO_FORMAT(&out_info);
 
-    MgmMemType in_mem = mem_type_from_caps(incaps);
-    MgmMemType out_mem = mem_type_from_caps(outcaps);
+	MgmMemType in_mem = mem_type_from_caps(incaps);
+	MgmMemType out_mem = mem_type_from_caps(outcaps);
 
-    // If input is system memory but the buffer carries MagmaHipMeta,
-    // override: the data is really on GPU.
-    if (in_mem == MGM_MEM_SYSTEM) {
-        // Peek at the first buffer to detect MagmaHipMeta
-        // (We can't peek here in set_caps, so the transform will
-        //  detect this case and re-dispatch.)
-    }
+	// If input is system memory but the buffer carries MagmaHipMeta,
+	// override: the data is really on GPU.
+	if (in_mem == MGM_MEM_SYSTEM) {
+		// Peek at the first buffer to detect MagmaHipMeta
+		// (We can't peek here in set_caps, so the transform will
+		//  detect this case and re-dispatch.)
+	}
 
-    // Look up converter
-    self->convert = nullptr;
-    for (gint i = 0; i < convert_table_count; i++) {
-        const MgmConvertEntry* e = &convert_table[i];
-        if (e->in_mem == in_mem && e->in_fmt == self->in_format && e->out_mem == out_mem && e->out_fmt == self->out_format) {
-            self->convert = e->func;
-            break;
-        }
-    }
+	// Look up converter
+	self->convert = nullptr;
+	for (gint i = 0; i < convert_table_count; i++) {
+		const MgmConvertEntry* e = &convert_table[i];
+		if (e->in_mem == in_mem && e->in_fmt == self->in_format && e->out_mem == out_mem && e->out_fmt == self->out_format) {
+			self->convert = e->func;
+			break;
+		}
+	}
 
-    GST_INFO_OBJECT(self,
-                    "Input %dx%d fmt=%s mem=%d → fmt=%s mem=%d %s",
-                    self->in_width,
-                    self->in_height,
-                    gst_video_format_to_string(self->in_format),
-                    (int)in_mem,
-                    gst_video_format_to_string(self->out_format),
-                    (int)out_mem,
-                    self->convert ? "converter found" : "passthrough");
-    return TRUE;
+	GST_INFO_OBJECT(self,
+	                "Input %dx%d fmt=%s mem=%d → fmt=%s mem=%d %s",
+	                self->in_width,
+	                self->in_height,
+	                gst_video_format_to_string(self->in_format),
+	                (int)in_mem,
+	                gst_video_format_to_string(self->out_format),
+	                (int)out_mem,
+	                self->convert ? "converter found" : "passthrough");
+	return TRUE;
 }
 
 static gboolean gst_magma_videoconvert_transform_size(GstBaseTransform* trans, GstPadDirection direction, GstCaps* caps, gsize size, GstCaps* othercaps, gsize* othersize) {
 
-    GstVideoInfo info;
-    if (!gst_video_info_from_caps(&info, othercaps)) {
-        GST_ERROR_OBJECT(trans, "Failed to parse output caps for transform_size");
-        return FALSE;
-    }
-    *othersize = GST_VIDEO_INFO_SIZE(&info);
-    return TRUE;
+	GstVideoInfo info;
+	if (!gst_video_info_from_caps(&info, othercaps)) {
+		GST_ERROR_OBJECT(trans, "Failed to parse output caps for transform_size");
+		return FALSE;
+	}
+	*othersize = GST_VIDEO_INFO_SIZE(&info);
+	return TRUE;
 }
 
 // ─── Kernel directory resolution ──────────────────────────────────
 static const char* find_kernel_dir(void) {
-    const char* env = g_getenv("MAGMA_KERNEL_DIR");
-    if (env)
-        return env;
-    return MAGMA_KERNEL_SRC_DIR;
+	const char* env = g_getenv("MAGMA_KERNEL_DIR");
+	if (env)
+		return env;
+	return MAGMA_KERNEL_SRC_DIR;
 }
 
 // ─── Converter helpers ──────────────────────────────────────────────
 
 static GstBuffer* dmabuf_from_gbm_bo(GstMagmaVideoConvert* self, gsize size, GstVideoFormat fmt, gint w, gint h) {
-    int out_fd = gbm_bo_get_fd(self->gbm_bo);
-    if (out_fd < 0) {
-        GST_ERROR_OBJECT(self, "gbm_bo_get_fd failed");
-        return nullptr;
-    }
+	int out_fd = gbm_bo_get_fd(self->gbm_bo);
+	if (out_fd < 0) {
+		GST_ERROR_OBJECT(self, "gbm_bo_get_fd failed");
+		return nullptr;
+	}
 
-    GstAllocator* allocator = gst_dmabuf_allocator_new();
-    if (!allocator) {
-        close(out_fd);
-        return nullptr;
-    }
-    GstMemory* mem = gst_dmabuf_allocator_alloc(allocator, out_fd, size);
-    gst_object_unref(allocator);
-    if (!mem) {
-        close(out_fd);
-        return nullptr;
-    }
+	GstAllocator* allocator = gst_dmabuf_allocator_new();
+	if (!allocator) {
+		close(out_fd);
+		return nullptr;
+	}
+	GstMemory* mem = gst_dmabuf_allocator_alloc(allocator, out_fd, size);
+	gst_object_unref(allocator);
+	if (!mem) {
+		close(out_fd);
+		return nullptr;
+	}
 
-    GstBuffer* buf = gst_buffer_new();
-    gst_buffer_append_memory(buf, mem);
+	GstBuffer* buf = gst_buffer_new();
+	gst_buffer_append_memory(buf, mem);
 
-    // Attach video meta so downstream knows the layout
-    gint strides[GST_VIDEO_MAX_PLANES] = {};
-    gsize offsets[GST_VIDEO_MAX_PLANES] = {};
-    gint n_planes = GST_VIDEO_FORMAT_INFO_N_PLANES(gst_video_format_get_info(fmt));
-    guint stride = self->gbm_stride;
-    gsize plane_offset = 0;
-    for (gint i = 0; i < n_planes; i++) {
-        strides[i] = (gint)stride;
-        offsets[i] = plane_offset;
-        plane_offset += stride * GST_VIDEO_FORMAT_INFO_SCALE_HEIGHT(gst_video_format_get_info(fmt), i, h);
-    }
-    gst_buffer_add_video_meta_full(buf, GST_VIDEO_FRAME_FLAG_NONE, fmt, w, h, n_planes, offsets, strides);
-    return buf;
+	// Attach video meta so downstream knows the layout
+	gint strides[GST_VIDEO_MAX_PLANES] = {};
+	gsize offsets[GST_VIDEO_MAX_PLANES] = {};
+	gint n_planes = GST_VIDEO_FORMAT_INFO_N_PLANES(gst_video_format_get_info(fmt));
+	guint stride = self->gbm_stride;
+	gsize plane_offset = 0;
+	for (gint i = 0; i < n_planes; i++) {
+		strides[i] = (gint)stride;
+		offsets[i] = plane_offset;
+		plane_offset += stride * GST_VIDEO_FORMAT_INFO_SCALE_HEIGHT(gst_video_format_get_info(fmt), i, h);
+	}
+	gst_buffer_add_video_meta_full(buf, GST_VIDEO_FRAME_FLAG_NONE, fmt, w, h, n_planes, offsets, strides);
+	return buf;
 }
 
 // ─── BGRx (packed XRGB8888) conversion helpers ─────────────────────
 
 static gboolean ensure_rgb_kernel(GstMagmaVideoConvert* self) {
-    if (self->rgb_ready)
-        return TRUE;
-    std::string kernel_path = std::string(find_kernel_dir()) + "/nv12_to_xrgb8888.hip";
-    HipKernel kern = compile_kernel(kernel_path.c_str(), "nv12_to_xrgb8888");
-    if (!kern.func) {
-        GST_ERROR_OBJECT(self, "Failed to compile nv12_to_xrgb8888 from %s", kernel_path.c_str());
-        return FALSE;
-    }
-    self->rgb_module = kern.module;
-    self->rgb_func = kern.func;
-    self->rgb_ready = TRUE;
-    GST_INFO_OBJECT(self, "Kernel compiled from %s", kernel_path.c_str());
-    return TRUE;
+	if (self->rgb_ready)
+		return TRUE;
+	std::string kernel_path = std::string(find_kernel_dir()) + "/nv12_to_xrgb8888.hip";
+	HipKernel kern = compile_kernel(kernel_path.c_str(), "nv12_to_xrgb8888");
+	if (!kern.func) {
+		GST_ERROR_OBJECT(self, "Failed to compile nv12_to_xrgb8888 from %s", kernel_path.c_str());
+		return FALSE;
+	}
+	self->rgb_module = kern.module;
+	self->rgb_func = kern.func;
+	self->rgb_ready = TRUE;
+	GST_INFO_OBJECT(self, "Kernel compiled from %s", kernel_path.c_str());
+	return TRUE;
 }
 
 /**
@@ -471,509 +470,509 @@ static gboolean ensure_rgb_kernel(GstMagmaVideoConvert* self) {
  * typically EGL/GL, which knows nothing about our HIP stream.
  */
 static GstFlowReturn launch_nv12_to_bgrx(GstMagmaVideoConvert* self, hipDeviceptr_t src_y, int y_stride, hipDeviceptr_t src_uv, int uv_stride) {
-    if (!ensure_rgb_kernel(self))
-        return GST_FLOW_ERROR;
+	if (!ensure_rgb_kernel(self))
+		return GST_FLOW_ERROR;
 
-    int w = self->in_width, h = self->in_height;
-    int dst_stride_px = (int)(self->gbm_stride / 4);
-    void* args[] = {&src_y, &y_stride, &src_uv, &uv_stride, &self->d_image, &dst_stride_px, &w, &h};
+	int w = self->in_width, h = self->in_height;
+	int dst_stride_px = (int)(self->gbm_stride / 4);
+	void* args[] = {&src_y, &y_stride, &src_uv, &uv_stride, &self->d_image, &dst_stride_px, &w, &h};
 
-    int bx = 32, by = 8;
-    dim3 grid((w + bx - 1) / bx, (h + by - 1) / by);
-    hipError_t herr = hipModuleLaunchKernel(self->rgb_func, grid.x, grid.y, 1, bx, by, 1, 0, self->hip_stream, args, nullptr);
-    if (herr != hipSuccess) {
-        GST_ERROR_OBJECT(self, "nv12_to_xrgb8888 launch failed: %s", hipGetErrorString(herr));
-        return GST_FLOW_ERROR;
-    }
-    herr = hipStreamSynchronize(self->hip_stream);
-    if (herr != hipSuccess) {
-        GST_ERROR_OBJECT(self, "stream sync failed: %s", hipGetErrorString(herr));
-        return GST_FLOW_ERROR;
-    }
-    return GST_FLOW_OK;
+	int bx = 32, by = 8;
+	dim3 grid((w + bx - 1) / bx, (h + by - 1) / by);
+	hipError_t herr = hipModuleLaunchKernel(self->rgb_func, grid.x, grid.y, 1, bx, by, 1, 0, self->hip_stream, args, nullptr);
+	if (herr != hipSuccess) {
+		GST_ERROR_OBJECT(self, "nv12_to_xrgb8888 launch failed: %s", hipGetErrorString(herr));
+		return GST_FLOW_ERROR;
+	}
+	herr = hipStreamSynchronize(self->hip_stream);
+	if (herr != hipSuccess) {
+		GST_ERROR_OBJECT(self, "stream sync failed: %s", hipGetErrorString(herr));
+		return GST_FLOW_ERROR;
+	}
+	return GST_FLOW_OK;
 }
 
 /** @brief Wrap the BGRx BO as the output buffer with a single-plane video meta. */
 static GstFlowReturn finish_bgrx_output(GstMagmaVideoConvert* self, GstBuffer* outbuf) {
-    gint w = self->in_width, h = self->in_height;
-    GstBuffer* out = dmabuf_from_gbm_bo(self, self->gpu_size, GST_VIDEO_FORMAT_BGRx, w, h);
-    if (!out)
-        return GST_FLOW_ERROR;
-    gst_buffer_remove_all_memory(outbuf);
-    gst_buffer_append_memory(outbuf, gst_buffer_get_memory(out, 0));
-    if (!gst_buffer_get_video_meta(outbuf)) {
-        gsize o[GST_VIDEO_MAX_PLANES] = {0};
-        gint s[GST_VIDEO_MAX_PLANES] = {(gint)self->gbm_stride};
-        gst_buffer_add_video_meta_full(outbuf, GST_VIDEO_FRAME_FLAG_NONE, GST_VIDEO_FORMAT_BGRx, w, h, 1, o, s);
-    }
-    gst_buffer_unref(out);
-    return GST_FLOW_OK;
+	gint w = self->in_width, h = self->in_height;
+	GstBuffer* out = dmabuf_from_gbm_bo(self, self->gpu_size, GST_VIDEO_FORMAT_BGRx, w, h);
+	if (!out)
+		return GST_FLOW_ERROR;
+	gst_buffer_remove_all_memory(outbuf);
+	gst_buffer_append_memory(outbuf, gst_buffer_get_memory(out, 0));
+	if (!gst_buffer_get_video_meta(outbuf)) {
+		gsize o[GST_VIDEO_MAX_PLANES] = {0};
+		gint s[GST_VIDEO_MAX_PLANES] = {(gint)self->gbm_stride};
+		gst_buffer_add_video_meta_full(outbuf, GST_VIDEO_FRAME_FLAG_NONE, GST_VIDEO_FORMAT_BGRx, w, h, 1, o, s);
+	}
+	gst_buffer_unref(out);
+	return GST_FLOW_OK;
 }
 
 // ─── Converter: DMABuf NV12 → DMABuf BGRx ──────────────────────────
 // The zero-copy display path: import the incoming NV12 DMABuf into HIP,
 // colour-convert on GPU into the packed BGRx BO, hand that to the sink.
 static GstFlowReturn conv_dmabuf_nv12_to_dmabuf_bgrx(GstMagmaVideoConvert* self, GstBuffer* inbuf, GstBuffer* outbuf) {
-    if (!self->gpu_ready && !create_gpu_dmabuf(self))
-        return GST_FLOW_ERROR;
+	if (!self->gpu_ready && !create_gpu_dmabuf(self))
+		return GST_FLOW_ERROR;
 
-    gint h = self->in_height;
-    gint src_stride = self->in_stride > 0 ? self->in_stride : self->in_width;
-    gsize uv_offset = (gsize)src_stride * h;
-    GstVideoMeta* vmeta = gst_buffer_get_video_meta(inbuf);
-    if (vmeta && vmeta->n_planes > 0) {
-        src_stride = vmeta->stride[0];
-        if (vmeta->n_planes > 1)
-            uv_offset = vmeta->offset[1];
-    }
+	gint h = self->in_height;
+	gint src_stride = self->in_stride > 0 ? self->in_stride : self->in_width;
+	gsize uv_offset = (gsize)src_stride * h;
+	GstVideoMeta* vmeta = gst_buffer_get_video_meta(inbuf);
+	if (vmeta && vmeta->n_planes > 0) {
+		src_stride = vmeta->stride[0];
+		if (vmeta->n_planes > 1)
+			uv_offset = vmeta->offset[1];
+	}
 
-    // A MagmaHipMeta input is already a device pointer — no import needed.
-    MagmaHipMeta* hmeta = magma_buffer_get_hip_meta(inbuf);
-    if (hmeta) {
-        hipDeviceptr_t y = hmeta->d_ptr;
-        hipDeviceptr_t uv = (hipDeviceptr_t)((uint8_t*)hmeta->d_ptr + (size_t)self->in_width * h);
-        GstFlowReturn fr = launch_nv12_to_bgrx(self, y, self->in_width, uv, self->in_width);
-        return fr != GST_FLOW_OK ? fr : finish_bgrx_output(self, outbuf);
-    }
+	// A MagmaHipMeta input is already a device pointer — no import needed.
+	MagmaHipMeta* hmeta = magma_buffer_get_hip_meta(inbuf);
+	if (hmeta) {
+		hipDeviceptr_t y = hmeta->d_ptr;
+		hipDeviceptr_t uv = (hipDeviceptr_t)((uint8_t*)hmeta->d_ptr + (size_t)self->in_width * h);
+		GstFlowReturn fr = launch_nv12_to_bgrx(self, y, self->in_width, uv, self->in_width);
+		return fr != GST_FLOW_OK ? fr : finish_bgrx_output(self, outbuf);
+	}
 
-    GstMemory* in_mem = gst_buffer_peek_memory(inbuf, 0);
-    if (!in_mem || !gst_is_dmabuf_memory(in_mem))
-        return GST_FLOW_ERROR;
+	GstMemory* in_mem = gst_buffer_peek_memory(inbuf, 0);
+	if (!in_mem || !gst_is_dmabuf_memory(in_mem))
+		return GST_FLOW_ERROR;
 
-    int dma_fd = fcntl(gst_dmabuf_memory_get_fd(in_mem), F_DUPFD_CLOEXEC, 0);
-    if (dma_fd < 0)
-        return GST_FLOW_ERROR;
+	int dma_fd = fcntl(gst_dmabuf_memory_get_fd(in_mem), F_DUPFD_CLOEXEC, 0);
+	if (dma_fd < 0)
+		return GST_FLOW_ERROR;
 
-    gsize buf_size = gst_memory_get_sizes(in_mem, NULL, NULL);
-    hipExternalMemoryHandleDesc desc{};
-    desc.type = hipExternalMemoryHandleTypeOpaqueFd;
-    desc.handle.fd = dma_fd;
-    desc.size = buf_size;
+	gsize buf_size = gst_memory_get_sizes(in_mem, NULL, NULL);
+	hipExternalMemoryHandleDesc desc{};
+	desc.type = hipExternalMemoryHandleTypeOpaqueFd;
+	desc.handle.fd = dma_fd;
+	desc.size = buf_size;
 
-    hipExternalMemory_t ext_mem;
-    hipError_t err = hipImportExternalMemory(&ext_mem, &desc);
-    close(dma_fd);
-    if (err != hipSuccess) {
-        GST_ERROR_OBJECT(self, "hipImportExternalMemory failed: %s", hipGetErrorString(err));
-        return GST_FLOW_ERROR;
-    }
+	hipExternalMemory_t ext_mem;
+	hipError_t err = hipImportExternalMemory(&ext_mem, &desc);
+	close(dma_fd);
+	if (err != hipSuccess) {
+		GST_ERROR_OBJECT(self, "hipImportExternalMemory failed: %s", hipGetErrorString(err));
+		return GST_FLOW_ERROR;
+	}
 
-    hipExternalMemoryBufferDesc bdesc{};
-    bdesc.offset = 0;
-    bdesc.size = buf_size;
-    hipDeviceptr_t d_src;
-    err = hipExternalMemoryGetMappedBuffer(&d_src, ext_mem, &bdesc);
-    if (err != hipSuccess) {
-        GST_ERROR_OBJECT(self, "hipExternalMemoryGetMappedBuffer failed: %s", hipGetErrorString(err));
-        (void)hipDestroyExternalMemory(ext_mem);
-        return GST_FLOW_ERROR;
-    }
+	hipExternalMemoryBufferDesc bdesc{};
+	bdesc.offset = 0;
+	bdesc.size = buf_size;
+	hipDeviceptr_t d_src;
+	err = hipExternalMemoryGetMappedBuffer(&d_src, ext_mem, &bdesc);
+	if (err != hipSuccess) {
+		GST_ERROR_OBJECT(self, "hipExternalMemoryGetMappedBuffer failed: %s", hipGetErrorString(err));
+		(void)hipDestroyExternalMemory(ext_mem);
+		return GST_FLOW_ERROR;
+	}
 
-    GstFlowReturn fr = launch_nv12_to_bgrx(self, d_src, src_stride, (hipDeviceptr_t)((uint8_t*)d_src + uv_offset), src_stride);
-    (void)hipDestroyExternalMemory(ext_mem);
-    return fr != GST_FLOW_OK ? fr : finish_bgrx_output(self, outbuf);
+	GstFlowReturn fr = launch_nv12_to_bgrx(self, d_src, src_stride, (hipDeviceptr_t)((uint8_t*)d_src + uv_offset), src_stride);
+	(void)hipDestroyExternalMemory(ext_mem);
+	return fr != GST_FLOW_OK ? fr : finish_bgrx_output(self, outbuf);
 }
 
 // ─── Converter: System NV12 → DMABuf BGRx ──────────────────────────
 // Uploads host NV12 into a contiguous scratch buffer, then converts.
 static GstFlowReturn conv_sys_nv12_to_dmabuf_bgrx(GstMagmaVideoConvert* self, GstBuffer* inbuf, GstBuffer* outbuf) {
-    if (!self->gpu_ready && !create_gpu_dmabuf(self))
-        return GST_FLOW_ERROR;
+	if (!self->gpu_ready && !create_gpu_dmabuf(self))
+		return GST_FLOW_ERROR;
 
-    gint w = self->in_width, h = self->in_height;
+	gint w = self->in_width, h = self->in_height;
 
-    // A MagmaHipMeta input is already on device — skip the upload entirely.
-    MagmaHipMeta* hmeta = magma_buffer_get_hip_meta(inbuf);
-    if (hmeta) {
-        hipDeviceptr_t uv = (hipDeviceptr_t)((uint8_t*)hmeta->d_ptr + (size_t)w * h);
-        GstFlowReturn fr = launch_nv12_to_bgrx(self, hmeta->d_ptr, w, uv, w);
-        return fr != GST_FLOW_OK ? fr : finish_bgrx_output(self, outbuf);
-    }
+	// A MagmaHipMeta input is already on device — skip the upload entirely.
+	MagmaHipMeta* hmeta = magma_buffer_get_hip_meta(inbuf);
+	if (hmeta) {
+		hipDeviceptr_t uv = (hipDeviceptr_t)((uint8_t*)hmeta->d_ptr + (size_t)w * h);
+		GstFlowReturn fr = launch_nv12_to_bgrx(self, hmeta->d_ptr, w, uv, w);
+		return fr != GST_FLOW_OK ? fr : finish_bgrx_output(self, outbuf);
+	}
 
-    gsize need = (gsize)w * h * 3 / 2;
-    if (!self->d_scratch || self->scratch_size < need) {
-        if (self->d_scratch)
-            (void)hipFree((void*)self->d_scratch);
-        self->d_scratch = 0;
-        if (hipMalloc((void**)&self->d_scratch, need) != hipSuccess) {
-            GST_ERROR_OBJECT(self, "hipMalloc(%zu) for NV12 staging failed", need);
-            self->scratch_size = 0;
-            return GST_FLOW_ERROR;
-        }
-        self->scratch_size = need;
-        self->scratch_stride = w;
-    }
+	gsize need = (gsize)w * h * 3 / 2;
+	if (!self->d_scratch || self->scratch_size < need) {
+		if (self->d_scratch)
+			(void)hipFree((void*)self->d_scratch);
+		self->d_scratch = 0;
+		if (hipMalloc((void**)&self->d_scratch, need) != hipSuccess) {
+			GST_ERROR_OBJECT(self, "hipMalloc(%zu) for NV12 staging failed", need);
+			self->scratch_size = 0;
+			return GST_FLOW_ERROR;
+		}
+		self->scratch_size = need;
+		self->scratch_stride = w;
+	}
 
-    gint stride = self->in_stride > 0 ? self->in_stride : w;
-    GstMapInfo in_map;
-    if (!gst_buffer_map(inbuf, &in_map, GST_MAP_READ))
-        return GST_FLOW_ERROR;
+	gint stride = self->in_stride > 0 ? self->in_stride : w;
+	GstMapInfo in_map;
+	if (!gst_buffer_map(inbuf, &in_map, GST_MAP_READ))
+		return GST_FLOW_ERROR;
 
-    // Y plane, then interleaved UV — packed to stride == w on the device.
-    hipError_t herr = hipMemcpy2DAsync((void*)self->d_scratch, (size_t)w, in_map.data, (size_t)stride, (size_t)w, (size_t)h, hipMemcpyHostToDevice, self->hip_stream);
-    if (herr == hipSuccess)
-        herr = hipMemcpy2DAsync((void*)((uint8_t*)self->d_scratch + (size_t)w * h), (size_t)w, in_map.data + (gsize)stride * h, (size_t)stride, (size_t)w,
-                                (size_t)h / 2, hipMemcpyHostToDevice, self->hip_stream);
-    gst_buffer_unmap(inbuf, &in_map);
-    if (herr != hipSuccess) {
-        GST_ERROR_OBJECT(self, "NV12 upload failed: %s", hipGetErrorString(herr));
-        return GST_FLOW_ERROR;
-    }
+	// Y plane, then interleaved UV — packed to stride == w on the device.
+	hipError_t herr = hipMemcpy2DAsync((void*)self->d_scratch, (size_t)w, in_map.data, (size_t)stride, (size_t)w, (size_t)h, hipMemcpyHostToDevice, self->hip_stream);
+	if (herr == hipSuccess)
+		herr = hipMemcpy2DAsync(
+		    (void*)((uint8_t*)self->d_scratch + (size_t)w * h), (size_t)w, in_map.data + (gsize)stride * h, (size_t)stride, (size_t)w, (size_t)h / 2, hipMemcpyHostToDevice, self->hip_stream);
+	gst_buffer_unmap(inbuf, &in_map);
+	if (herr != hipSuccess) {
+		GST_ERROR_OBJECT(self, "NV12 upload failed: %s", hipGetErrorString(herr));
+		return GST_FLOW_ERROR;
+	}
 
-    hipDeviceptr_t uv = (hipDeviceptr_t)((uint8_t*)self->d_scratch + (size_t)w * h);
-    GstFlowReturn fr = launch_nv12_to_bgrx(self, self->d_scratch, w, uv, w);
-    return fr != GST_FLOW_OK ? fr : finish_bgrx_output(self, outbuf);
+	hipDeviceptr_t uv = (hipDeviceptr_t)((uint8_t*)self->d_scratch + (size_t)w * h);
+	GstFlowReturn fr = launch_nv12_to_bgrx(self, self->d_scratch, w, uv, w);
+	return fr != GST_FLOW_OK ? fr : finish_bgrx_output(self, outbuf);
 }
 
 // ─── Converter: System NV12 → DMABuf NV12 ──────────────────────────
 static GstFlowReturn conv_sys_nv12_to_dmabuf_nv12(GstMagmaVideoConvert* self, GstBuffer* inbuf, GstBuffer* outbuf) {
-    if (!self->gpu_ready && !create_gpu_dmabuf(self))
-        return GST_FLOW_ERROR;
-    gint w = self->in_width, h = self->in_height;
-    gsize pitch = self->gbm_stride;
+	if (!self->gpu_ready && !create_gpu_dmabuf(self))
+		return GST_FLOW_ERROR;
+	gint w = self->in_width, h = self->in_height;
+	gsize pitch = self->gbm_stride;
 
-    // Check for MagmaHipMeta → GPU path
-    MagmaHipMeta* hmeta = magma_buffer_get_hip_meta(inbuf);
-    if (hmeta) {
-        // GPU path: copy NV12 from contiguous GPU buffer to pitched DMABuf
-        // hmeta->d_ptr layout: Y at 0, UV interleaved at w*h
-        hipDeviceptr_t src_y = hmeta->d_ptr;
-        hipDeviceptr_t src_uv = (hipDeviceptr_t)((uint8_t*)hmeta->d_ptr + (size_t)w * h);
+	// Check for MagmaHipMeta → GPU path
+	MagmaHipMeta* hmeta = magma_buffer_get_hip_meta(inbuf);
+	if (hmeta) {
+		// GPU path: copy NV12 from contiguous GPU buffer to pitched DMABuf
+		// hmeta->d_ptr layout: Y at 0, UV interleaved at w*h
+		hipDeviceptr_t src_y = hmeta->d_ptr;
+		hipDeviceptr_t src_uv = (hipDeviceptr_t)((uint8_t*)hmeta->d_ptr + (size_t)w * h);
 
-        hipError_t herr = hipMemcpy2D((void*)self->d_image, pitch, (const void*)src_y, (size_t)w, (size_t)w, (size_t)h, hipMemcpyDeviceToDevice);
-        if (herr != hipSuccess) {
-            GST_ERROR_OBJECT(self, "hipMemcpy2D(Y) failed: %s", hipGetErrorString(herr));
-            return GST_FLOW_ERROR;
-        }
+		hipError_t herr = hipMemcpy2D((void*)self->d_image, pitch, (const void*)src_y, (size_t)w, (size_t)w, (size_t)h, hipMemcpyDeviceToDevice);
+		if (herr != hipSuccess) {
+			GST_ERROR_OBJECT(self, "hipMemcpy2D(Y) failed: %s", hipGetErrorString(herr));
+			return GST_FLOW_ERROR;
+		}
 
-        herr = hipMemcpy2D((void*)((uint8_t*)self->d_image + pitch * h), pitch, (const void*)src_uv, (size_t)w, (size_t)w, (size_t)h / 2, hipMemcpyDeviceToDevice);
-        if (herr != hipSuccess) {
-            GST_ERROR_OBJECT(self, "hipMemcpy2D(UV) failed: %s", hipGetErrorString(herr));
-            return GST_FLOW_ERROR;
-        }
+		herr = hipMemcpy2D((void*)((uint8_t*)self->d_image + pitch * h), pitch, (const void*)src_uv, (size_t)w, (size_t)w, (size_t)h / 2, hipMemcpyDeviceToDevice);
+		if (herr != hipSuccess) {
+			GST_ERROR_OBJECT(self, "hipMemcpy2D(UV) failed: %s", hipGetErrorString(herr));
+			return GST_FLOW_ERROR;
+		}
 
-        GstBuffer* out = dmabuf_from_gbm_bo(self, self->gpu_size, GST_VIDEO_FORMAT_NV12, w, h);
-        if (!out)
-            return GST_FLOW_ERROR;
-        gst_buffer_remove_all_memory(outbuf);
-        gst_buffer_append_memory(outbuf, gst_buffer_get_memory(out, 0));
-        {
-            gsize o[GST_VIDEO_MAX_PLANES] = {0, (gsize)(pitch * h)};
-            gint s[GST_VIDEO_MAX_PLANES] = {(gint)pitch, (gint)pitch};
-            if (!gst_buffer_get_video_meta(outbuf))
-                gst_buffer_add_video_meta_full(outbuf, GST_VIDEO_FRAME_FLAG_NONE, GST_VIDEO_FORMAT_NV12, w, h, 2, o, s);
-        }
-        gst_buffer_unref(out);
-        return GST_FLOW_OK;
-    }
+		GstBuffer* out = dmabuf_from_gbm_bo(self, self->gpu_size, GST_VIDEO_FORMAT_NV12, w, h);
+		if (!out)
+			return GST_FLOW_ERROR;
+		gst_buffer_remove_all_memory(outbuf);
+		gst_buffer_append_memory(outbuf, gst_buffer_get_memory(out, 0));
+		{
+			gsize o[GST_VIDEO_MAX_PLANES] = {0, (gsize)(pitch * h)};
+			gint s[GST_VIDEO_MAX_PLANES] = {(gint)pitch, (gint)pitch};
+			if (!gst_buffer_get_video_meta(outbuf))
+				gst_buffer_add_video_meta_full(outbuf, GST_VIDEO_FRAME_FLAG_NONE, GST_VIDEO_FORMAT_NV12, w, h, 2, o, s);
+		}
+		gst_buffer_unref(out);
+		return GST_FLOW_OK;
+	}
 
-    // ─── CPU upload path: copy host NV12 → GPU NV12 ────────────
-    gint stride = self->in_stride;
+	// ─── CPU upload path: copy host NV12 → GPU NV12 ────────────
+	gint stride = self->in_stride;
 
-    GstMapInfo in_map;
-    if (!gst_buffer_map(inbuf, &in_map, GST_MAP_READ))
-        return GST_FLOW_ERROR;
+	GstMapInfo in_map;
+	if (!gst_buffer_map(inbuf, &in_map, GST_MAP_READ))
+		return GST_FLOW_ERROR;
 
-    if (stride == (gint)pitch) {
-        if (hipMemcpyAsync(self->d_image, in_map.data, self->gpu_size, hipMemcpyHostToDevice, self->hip_stream) != hipSuccess)
-            return GST_FLOW_ERROR;
-    } else {
-        for (gint y = 0; y < h; y++)
-            if (hipMemcpyAsync((guint8*)self->d_image + y * pitch, in_map.data + y * stride, (gsize)w, hipMemcpyHostToDevice, self->hip_stream) != hipSuccess)
-                return GST_FLOW_ERROR;
+	if (stride == (gint)pitch) {
+		if (hipMemcpyAsync(self->d_image, in_map.data, self->gpu_size, hipMemcpyHostToDevice, self->hip_stream) != hipSuccess)
+			return GST_FLOW_ERROR;
+	} else {
+		for (gint y = 0; y < h; y++)
+			if (hipMemcpyAsync((guint8*)self->d_image + y * pitch, in_map.data + y * stride, (gsize)w, hipMemcpyHostToDevice, self->hip_stream) != hipSuccess)
+				return GST_FLOW_ERROR;
 
-        const guint8* src_uv = in_map.data + stride * h;
-        for (gint y = 0; y < h / 2; y++)
-            if (hipMemcpyAsync((guint8*)self->d_image + pitch * h + y * pitch, src_uv + y * stride, (gsize)w, hipMemcpyHostToDevice, self->hip_stream) != hipSuccess)
-                return GST_FLOW_ERROR;
-    }
-    gst_buffer_unmap(inbuf, &in_map);
-    GstBuffer* out = dmabuf_from_gbm_bo(self, self->gpu_size, GST_VIDEO_FORMAT_NV12, w, h);
-    if (!out)
-        return GST_FLOW_ERROR;
-    gst_buffer_remove_all_memory(outbuf);
-    gst_buffer_append_memory(outbuf, gst_buffer_get_memory(out, 0));
-    {
-        gsize offsets[GST_VIDEO_MAX_PLANES] = {0, (gsize)(pitch * h)};
-        gint strides[GST_VIDEO_MAX_PLANES] = {(gint)pitch, (gint)pitch};
-        if (!gst_buffer_get_video_meta(outbuf))
-            gst_buffer_add_video_meta_full(outbuf, GST_VIDEO_FRAME_FLAG_NONE, GST_VIDEO_FORMAT_NV12, w, h, 2, offsets, strides);
-    }
-    gst_buffer_unref(out);
-    return GST_FLOW_OK;
+		const guint8* src_uv = in_map.data + stride * h;
+		for (gint y = 0; y < h / 2; y++)
+			if (hipMemcpyAsync((guint8*)self->d_image + pitch * h + y * pitch, src_uv + y * stride, (gsize)w, hipMemcpyHostToDevice, self->hip_stream) != hipSuccess)
+				return GST_FLOW_ERROR;
+	}
+	gst_buffer_unmap(inbuf, &in_map);
+	GstBuffer* out = dmabuf_from_gbm_bo(self, self->gpu_size, GST_VIDEO_FORMAT_NV12, w, h);
+	if (!out)
+		return GST_FLOW_ERROR;
+	gst_buffer_remove_all_memory(outbuf);
+	gst_buffer_append_memory(outbuf, gst_buffer_get_memory(out, 0));
+	{
+		gsize offsets[GST_VIDEO_MAX_PLANES] = {0, (gsize)(pitch * h)};
+		gint strides[GST_VIDEO_MAX_PLANES] = {(gint)pitch, (gint)pitch};
+		if (!gst_buffer_get_video_meta(outbuf))
+			gst_buffer_add_video_meta_full(outbuf, GST_VIDEO_FRAME_FLAG_NONE, GST_VIDEO_FORMAT_NV12, w, h, 2, offsets, strides);
+	}
+	gst_buffer_unref(out);
+	return GST_FLOW_OK;
 }
 
 // ─── Converter: DMABuf NV12 → System NV12 ──────────────────────────
 static GstFlowReturn conv_dmabuf_nv12_to_sys_nv12(GstMagmaVideoConvert* self, GstBuffer* inbuf, GstBuffer* outbuf) {
-    GstMemory* in_mem = gst_buffer_peek_memory(inbuf, 0);
-    if (!in_mem || !gst_is_dmabuf_memory(in_mem))
-        return GST_FLOW_ERROR;
+	GstMemory* in_mem = gst_buffer_peek_memory(inbuf, 0);
+	if (!in_mem || !gst_is_dmabuf_memory(in_mem))
+		return GST_FLOW_ERROR;
 
-    gsize src_stride = self->in_width;
-    GstVideoMeta* vmeta = gst_buffer_get_video_meta(inbuf);
-    if (vmeta && vmeta->stride[0] > 0)
-        src_stride = vmeta->stride[0];
-    gint w = self->in_width, h = self->in_height, dst_stride = self->in_stride;
+	gsize src_stride = self->in_width;
+	GstVideoMeta* vmeta = gst_buffer_get_video_meta(inbuf);
+	if (vmeta && vmeta->stride[0] > 0)
+		src_stride = vmeta->stride[0];
+	gint w = self->in_width, h = self->in_height, dst_stride = self->in_stride;
 
-    // Try HIP import first (fast GPU path) — dup FD so original survives
-    int dma_fd = fcntl(gst_dmabuf_memory_get_fd(in_mem), F_DUPFD_CLOEXEC, 0);
-    if (dma_fd >= 0) {
-        gsize buf_size = gst_memory_get_sizes(in_mem, NULL, NULL);
+	// Try HIP import first (fast GPU path) — dup FD so original survives
+	int dma_fd = fcntl(gst_dmabuf_memory_get_fd(in_mem), F_DUPFD_CLOEXEC, 0);
+	if (dma_fd >= 0) {
+		gsize buf_size = gst_memory_get_sizes(in_mem, NULL, NULL);
 
-        hipExternalMemoryHandleDesc desc{};
-        desc.type = hipExternalMemoryHandleTypeOpaqueFd;
-        desc.handle.fd = dma_fd;
-        desc.size = buf_size;
-        hipExternalMemory_t ext_mem;
-        hipError_t err = hipImportExternalMemory(&ext_mem, &desc);
-        if (err == hipSuccess) {
-            hipExternalMemoryBufferDesc bdesc{};
-            bdesc.offset = 0;
-            bdesc.size = buf_size;
-            hipDeviceptr_t d_ptr;
-            err = hipExternalMemoryGetMappedBuffer(&d_ptr, ext_mem, &bdesc);
-            if (err == hipSuccess) {
-                GstMapInfo out_map;
-                if (gst_buffer_map(outbuf, &out_map, GST_MAP_WRITE)) {
-                    if (dst_stride == (gint)src_stride) {
-                        err = hipMemcpy(out_map.data, d_ptr, buf_size, hipMemcpyDeviceToHost);
-                    } else {
-                        for (gint y = 0; y < h; y++)
-                            if ((err = hipMemcpy(out_map.data + y * dst_stride, (guint8*)d_ptr + y * src_stride, (gsize)w, hipMemcpyDeviceToHost)) != hipSuccess)
-                                break;
-                        if (err == hipSuccess) {
-                            const guint8* src_uv = (guint8*)d_ptr + src_stride * h;
-                            for (gint y = 0; y < h / 2; y++) {
-                                auto t = out_map.data + dst_stride * h + y * dst_stride;
-                                if ((err = hipMemcpy(t, src_uv + y * src_stride, (gsize)w, hipMemcpyDeviceToHost)) != hipSuccess)
-                                    break;
-                            }
-                        }
-                    }
-                    gst_buffer_unmap(outbuf, &out_map);
-                }
-                (void)hipDestroyExternalMemory(ext_mem);
-                if (err == hipSuccess) {
-                    close(dma_fd);
-                    return GST_FLOW_OK;
-                }
-            } else {
-                (void)hipDestroyExternalMemory(ext_mem);
-            }
-        }
-        close(dma_fd);
-        // fall through to CPU path
-    }
+		hipExternalMemoryHandleDesc desc{};
+		desc.type = hipExternalMemoryHandleTypeOpaqueFd;
+		desc.handle.fd = dma_fd;
+		desc.size = buf_size;
+		hipExternalMemory_t ext_mem;
+		hipError_t err = hipImportExternalMemory(&ext_mem, &desc);
+		if (err == hipSuccess) {
+			hipExternalMemoryBufferDesc bdesc{};
+			bdesc.offset = 0;
+			bdesc.size = buf_size;
+			hipDeviceptr_t d_ptr;
+			err = hipExternalMemoryGetMappedBuffer(&d_ptr, ext_mem, &bdesc);
+			if (err == hipSuccess) {
+				GstMapInfo out_map;
+				if (gst_buffer_map(outbuf, &out_map, GST_MAP_WRITE)) {
+					if (dst_stride == (gint)src_stride) {
+						err = hipMemcpy(out_map.data, d_ptr, buf_size, hipMemcpyDeviceToHost);
+					} else {
+						for (gint y = 0; y < h; y++)
+							if ((err = hipMemcpy(out_map.data + y * dst_stride, (guint8*)d_ptr + y * src_stride, (gsize)w, hipMemcpyDeviceToHost)) != hipSuccess)
+								break;
+						if (err == hipSuccess) {
+							const guint8* src_uv = (guint8*)d_ptr + src_stride * h;
+							for (gint y = 0; y < h / 2; y++) {
+								auto t = out_map.data + dst_stride * h + y * dst_stride;
+								if ((err = hipMemcpy(t, src_uv + y * src_stride, (gsize)w, hipMemcpyDeviceToHost)) != hipSuccess)
+									break;
+							}
+						}
+					}
+					gst_buffer_unmap(outbuf, &out_map);
+				}
+				(void)hipDestroyExternalMemory(ext_mem);
+				if (err == hipSuccess) {
+					close(dma_fd);
+					return GST_FLOW_OK;
+				}
+			} else {
+				(void)hipDestroyExternalMemory(ext_mem);
+			}
+		}
+		close(dma_fd);
+		// fall through to CPU path
+	}
 
-    // CPU fallback: map DMABuf directly instead of importing to HIP
-    GstMapInfo in_map, out_map;
-    if (!gst_buffer_map(inbuf, &in_map, GST_MAP_READ) || !gst_buffer_map(outbuf, &out_map, GST_MAP_WRITE)) {
-        if (gst_buffer_map(inbuf, &in_map, GST_MAP_READ))
-            gst_buffer_unmap(inbuf, &in_map);
-        return GST_FLOW_ERROR;
-    }
+	// CPU fallback: map DMABuf directly instead of importing to HIP
+	GstMapInfo in_map, out_map;
+	if (!gst_buffer_map(inbuf, &in_map, GST_MAP_READ) || !gst_buffer_map(outbuf, &out_map, GST_MAP_WRITE)) {
+		if (gst_buffer_map(inbuf, &in_map, GST_MAP_READ))
+			gst_buffer_unmap(inbuf, &in_map);
+		return GST_FLOW_ERROR;
+	}
 
-    if (dst_stride == (gint)src_stride) {
-        memcpy(out_map.data, in_map.data, (gsize)w * h * 3 / 2);
-    } else {
-        for (gint y = 0; y < h; y++)
-            memcpy(out_map.data + y * dst_stride, in_map.data + y * src_stride, (gsize)w);
-        const guint8* src_uv = in_map.data + src_stride * h;
-        for (gint y = 0; y < h / 2; y++)
-            memcpy(out_map.data + dst_stride * h + y * dst_stride, src_uv + y * src_stride, (gsize)w);
-    }
-    gst_buffer_unmap(inbuf, &in_map);
-    gst_buffer_unmap(outbuf, &out_map);
-    return GST_FLOW_OK;
+	if (dst_stride == (gint)src_stride) {
+		memcpy(out_map.data, in_map.data, (gsize)w * h * 3 / 2);
+	} else {
+		for (gint y = 0; y < h; y++)
+			memcpy(out_map.data + y * dst_stride, in_map.data + y * src_stride, (gsize)w);
+		const guint8* src_uv = in_map.data + src_stride * h;
+		for (gint y = 0; y < h / 2; y++)
+			memcpy(out_map.data + dst_stride * h + y * dst_stride, src_uv + y * src_stride, (gsize)w);
+	}
+	gst_buffer_unmap(inbuf, &in_map);
+	gst_buffer_unmap(outbuf, &out_map);
+	return GST_FLOW_OK;
 }
 
 // ─── Converter: System I420 → System NV12 ──────────────────────────
 static GstFlowReturn conv_sys_i420_to_sys_nv12(GstMagmaVideoConvert* self, GstBuffer* inbuf, GstBuffer* outbuf) {
-    gint w = self->in_width, h = self->in_height;
-    gint src_stride = self->in_stride > 0 ? self->in_stride : w;
+	gint w = self->in_width, h = self->in_height;
+	gint src_stride = self->in_stride > 0 ? self->in_stride : w;
 
-    // Check for MagmaHipMeta → download from GPU, then interleave on CPU
-    MagmaHipMeta* hmeta = magma_buffer_get_hip_meta(inbuf);
-    if (hmeta) {
-        // Download Y plane from GPU (stride=w) → host
-        std::vector<uint8_t> y_host((size_t)w * h);
-        hipError_t herr = hipMemcpy2D(y_host.data(), (size_t)w, hmeta->d_ptr, (size_t)w, (size_t)w, (size_t)h, hipMemcpyDeviceToHost);
-        if (herr != hipSuccess) {
-            GST_ERROR_OBJECT(self, "hipMemcpy2D(Y) CPU path failed: %s", hipGetErrorString(herr));
-            return GST_FLOW_ERROR;
-        }
+	// Check for MagmaHipMeta → download from GPU, then interleave on CPU
+	MagmaHipMeta* hmeta = magma_buffer_get_hip_meta(inbuf);
+	if (hmeta) {
+		// Download Y plane from GPU (stride=w) → host
+		std::vector<uint8_t> y_host((size_t)w * h);
+		hipError_t herr = hipMemcpy2D(y_host.data(), (size_t)w, hmeta->d_ptr, (size_t)w, (size_t)w, (size_t)h, hipMemcpyDeviceToHost);
+		if (herr != hipSuccess) {
+			GST_ERROR_OBJECT(self, "hipMemcpy2D(Y) CPU path failed: %s", hipGetErrorString(herr));
+			return GST_FLOW_ERROR;
+		}
 
-        // Download U plane (at offset w*h, stride=w/2)
-        uint8_t* d_u = (uint8_t*)hmeta->d_ptr + (size_t)w * h;
-        uint8_t* d_v = d_u + (size_t)(w / 2) * (h / 2);
-        std::vector<uint8_t> u_host((size_t)(w / 2) * (h / 2));
-        std::vector<uint8_t> v_host((size_t)(w / 2) * (h / 2));
-        herr = hipMemcpy(u_host.data(), d_u, (size_t)(w / 2) * (h / 2), hipMemcpyDeviceToHost);
-        if (herr == hipSuccess)
-            herr = hipMemcpy(v_host.data(), d_v, (size_t)(w / 2) * (h / 2), hipMemcpyDeviceToHost);
-        if (herr != hipSuccess) {
-            GST_ERROR_OBJECT(self, "hipMemcpy(UV) CPU path failed: %s", hipGetErrorString(herr));
-            return GST_FLOW_ERROR;
-        }
+		// Download U plane (at offset w*h, stride=w/2)
+		uint8_t* d_u = (uint8_t*)hmeta->d_ptr + (size_t)w * h;
+		uint8_t* d_v = d_u + (size_t)(w / 2) * (h / 2);
+		std::vector<uint8_t> u_host((size_t)(w / 2) * (h / 2));
+		std::vector<uint8_t> v_host((size_t)(w / 2) * (h / 2));
+		herr = hipMemcpy(u_host.data(), d_u, (size_t)(w / 2) * (h / 2), hipMemcpyDeviceToHost);
+		if (herr == hipSuccess)
+			herr = hipMemcpy(v_host.data(), d_v, (size_t)(w / 2) * (h / 2), hipMemcpyDeviceToHost);
+		if (herr != hipSuccess) {
+			GST_ERROR_OBJECT(self, "hipMemcpy(UV) CPU path failed: %s", hipGetErrorString(herr));
+			return GST_FLOW_ERROR;
+		}
 
-        // Write to output system buffer
-        GstMapInfo out_map;
-        if (!gst_buffer_map(outbuf, &out_map, GST_MAP_WRITE))
-            return GST_FLOW_ERROR;
+		// Write to output system buffer
+		GstMapInfo out_map;
+		if (!gst_buffer_map(outbuf, &out_map, GST_MAP_WRITE))
+			return GST_FLOW_ERROR;
 
-        GstVideoMeta* vmeta = gst_buffer_get_video_meta(outbuf);
-        gint dst_stride = vmeta && vmeta->stride[0] > 0 ? vmeta->stride[0] : w;
+		GstVideoMeta* vmeta = gst_buffer_get_video_meta(outbuf);
+		gint dst_stride = vmeta && vmeta->stride[0] > 0 ? vmeta->stride[0] : w;
 
-        // Y plane
-        for (gint y = 0; y < h; y++)
-            memcpy(out_map.data + y * dst_stride, y_host.data() + y * w, (size_t)w);
+		// Y plane
+		for (gint y = 0; y < h; y++)
+			memcpy(out_map.data + y * dst_stride, y_host.data() + y * w, (size_t)w);
 
-        // Interleave U+V into NV12 UV
-        gint dst_uv_off = dst_stride * h;
-        for (gint y = 0; y < h / 2; y++)
-            for (gint x = 0; x < w / 2; x++) {
-                out_map.data[dst_uv_off + y * dst_stride + x * 2] = u_host[y * (w / 2) + x];
-                out_map.data[dst_uv_off + y * dst_stride + x * 2 + 1] = v_host[y * (w / 2) + x];
-            }
+		// Interleave U+V into NV12 UV
+		gint dst_uv_off = dst_stride * h;
+		for (gint y = 0; y < h / 2; y++)
+			for (gint x = 0; x < w / 2; x++) {
+				out_map.data[dst_uv_off + y * dst_stride + x * 2] = u_host[y * (w / 2) + x];
+				out_map.data[dst_uv_off + y * dst_stride + x * 2 + 1] = v_host[y * (w / 2) + x];
+			}
 
-        gst_buffer_unmap(outbuf, &out_map);
-        return GST_FLOW_OK;
-    }
+		gst_buffer_unmap(outbuf, &out_map);
+		return GST_FLOW_OK;
+	}
 
-    // ─── Pure CPU path: map input system buffer directly ─────────
-    GstMapInfo in_map;
-    if (!gst_buffer_map(inbuf, &in_map, GST_MAP_READ))
-        return GST_FLOW_ERROR;
-    GstMapInfo out_map;
-    if (!gst_buffer_map(outbuf, &out_map, GST_MAP_WRITE)) {
-        gst_buffer_unmap(inbuf, &in_map);
-        return GST_FLOW_ERROR;
-    }
+	// ─── Pure CPU path: map input system buffer directly ─────────
+	GstMapInfo in_map;
+	if (!gst_buffer_map(inbuf, &in_map, GST_MAP_READ))
+		return GST_FLOW_ERROR;
+	GstMapInfo out_map;
+	if (!gst_buffer_map(outbuf, &out_map, GST_MAP_WRITE)) {
+		gst_buffer_unmap(inbuf, &in_map);
+		return GST_FLOW_ERROR;
+	}
 
-    GstVideoMeta* vmeta = gst_buffer_get_video_meta(outbuf);
-    gint dst_stride = vmeta && vmeta->stride[0] > 0 ? vmeta->stride[0] : w;
+	GstVideoMeta* vmeta = gst_buffer_get_video_meta(outbuf);
+	gint dst_stride = vmeta && vmeta->stride[0] > 0 ? vmeta->stride[0] : w;
 
-    // Y plane
-    for (gint y = 0; y < h; y++)
-        memcpy(out_map.data + y * dst_stride, in_map.data + y * src_stride, (size_t)w);
+	// Y plane
+	for (gint y = 0; y < h; y++)
+		memcpy(out_map.data + y * dst_stride, in_map.data + y * src_stride, (size_t)w);
 
-    // Interleave U+V into NV12 UV
-    const uint8_t* src_u = in_map.data + src_stride * h;
-    const uint8_t* src_v = src_u + (size_t)(w / 2) * (h / 2);
-    gint dst_uv_off = dst_stride * h;
-    for (gint y = 0; y < h / 2; y++)
-        for (gint x = 0; x < w / 2; x++) {
-            out_map.data[dst_uv_off + y * dst_stride + x * 2] = src_u[y * (w / 2) + x];
-            out_map.data[dst_uv_off + y * dst_stride + x * 2 + 1] = src_v[y * (w / 2) + x];
-        }
+	// Interleave U+V into NV12 UV
+	const uint8_t* src_u = in_map.data + src_stride * h;
+	const uint8_t* src_v = src_u + (size_t)(w / 2) * (h / 2);
+	gint dst_uv_off = dst_stride * h;
+	for (gint y = 0; y < h / 2; y++)
+		for (gint x = 0; x < w / 2; x++) {
+			out_map.data[dst_uv_off + y * dst_stride + x * 2] = src_u[y * (w / 2) + x];
+			out_map.data[dst_uv_off + y * dst_stride + x * 2 + 1] = src_v[y * (w / 2) + x];
+		}
 
-    gst_buffer_unmap(outbuf, &out_map);
-    gst_buffer_unmap(inbuf, &in_map);
-    return GST_FLOW_OK;
+	gst_buffer_unmap(outbuf, &out_map);
+	gst_buffer_unmap(inbuf, &in_map);
+	return GST_FLOW_OK;
 }
 
 // ─── Converter: I420 → DMABuf NV12 ─────────────────────────────────
 // Handles both CPU (upload) and MagmaHip (GPU interleave) inputs.
 static GstFlowReturn conv_sys_i420_to_dmabuf_nv12(GstMagmaVideoConvert* self, GstBuffer* inbuf, GstBuffer* outbuf) {
-    if (!self->gpu_ready && !create_gpu_dmabuf(self))
-        return GST_FLOW_ERROR;
+	if (!self->gpu_ready && !create_gpu_dmabuf(self))
+		return GST_FLOW_ERROR;
 
-    gint w = self->in_width, h = self->in_height;
-    gsize pitch = self->gbm_stride;
+	gint w = self->in_width, h = self->in_height;
+	gsize pitch = self->gbm_stride;
 
-    // Check for MagmaHipMeta → GPU path
-    MagmaHipMeta* hmeta = magma_buffer_get_hip_meta(inbuf);
-    if (hmeta) {
-        // GPU path: interleave separate U/V planes into NV12 UV.
-        // dptr layout: Y at 0, U at w*h, V at w*h + w*h/4
-        if (!self->kernel_ready) {
-            std::string kernel_dir(find_kernel_dir());
-            std::string kernel_path = kernel_dir + "/videoconvert_kernels.hip";
-            HipKernel kern = compile_kernel(kernel_path.c_str(), "i420_to_nv12_uv");
-            if (!kern.func) {
-                GST_ERROR_OBJECT(self, "Failed to compile i420_to_nv12_uv from %s", kernel_path.c_str());
-                return GST_FLOW_ERROR;
-            }
-            self->kernel_module = kern.module;
-            self->kernel_func = kern.func;
-            self->kernel_ready = TRUE;
-            GST_INFO_OBJECT(self, "Kernel compiled from %s", kernel_path.c_str());
-        }
+	// Check for MagmaHipMeta → GPU path
+	MagmaHipMeta* hmeta = magma_buffer_get_hip_meta(inbuf);
+	if (hmeta) {
+		// GPU path: interleave separate U/V planes into NV12 UV.
+		// dptr layout: Y at 0, U at w*h, V at w*h + w*h/4
+		if (!self->kernel_ready) {
+			std::string kernel_dir(find_kernel_dir());
+			std::string kernel_path = kernel_dir + "/videoconvert_kernels.hip";
+			HipKernel kern = compile_kernel(kernel_path.c_str(), "i420_to_nv12_uv");
+			if (!kern.func) {
+				GST_ERROR_OBJECT(self, "Failed to compile i420_to_nv12_uv from %s", kernel_path.c_str());
+				return GST_FLOW_ERROR;
+			}
+			self->kernel_module = kern.module;
+			self->kernel_func = kern.func;
+			self->kernel_ready = TRUE;
+			GST_INFO_OBJECT(self, "Kernel compiled from %s", kernel_path.c_str());
+		}
 
-        hipDeviceptr_t pu = (hipDeviceptr_t)((uint8_t*)hmeta->d_ptr + (size_t)w * h);
-        hipDeviceptr_t pv = (hipDeviceptr_t)((uint8_t*)hmeta->d_ptr + (size_t)w * h + (size_t)(w / 2) * (h / 2));
-        hipDeviceptr_t dst_uv = (hipDeviceptr_t)((uint8_t*)self->d_image + pitch * h);
-        int pitch_i = (int)pitch;
+		hipDeviceptr_t pu = (hipDeviceptr_t)((uint8_t*)hmeta->d_ptr + (size_t)w * h);
+		hipDeviceptr_t pv = (hipDeviceptr_t)((uint8_t*)hmeta->d_ptr + (size_t)w * h + (size_t)(w / 2) * (h / 2));
+		hipDeviceptr_t dst_uv = (hipDeviceptr_t)((uint8_t*)self->d_image + pitch * h);
+		int pitch_i = (int)pitch;
 
-        // Copy Y plane: contiguous src (stride=w) → pitched dst (stride=pitch)
-        hipError_t herr = hipMemcpy2D((void*)self->d_image, pitch, (const void*)hmeta->d_ptr, (size_t)w, (size_t)w, (size_t)h, hipMemcpyDeviceToDevice);
-        if (herr != hipSuccess) {
-            GST_ERROR_OBJECT(self, "hipMemcpy2D(Y) failed: %s", hipGetErrorString(herr));
-            return GST_FLOW_ERROR;
-        }
+		// Copy Y plane: contiguous src (stride=w) → pitched dst (stride=pitch)
+		hipError_t herr = hipMemcpy2D((void*)self->d_image, pitch, (const void*)hmeta->d_ptr, (size_t)w, (size_t)w, (size_t)h, hipMemcpyDeviceToDevice);
+		if (herr != hipSuccess) {
+			GST_ERROR_OBJECT(self, "hipMemcpy2D(Y) failed: %s", hipGetErrorString(herr));
+			return GST_FLOW_ERROR;
+		}
 
-        // Interleave U+V → NV12 UV via compiled kernel
-        void* args[] = {&dst_uv, &pitch_i, &pu, &pv, &w, &h};
-        int bx = 32, by = 16;
-        dim3 grid((w / 2 + bx - 1) / bx, (h / 2 + by - 1) / by);
-        herr = hipModuleLaunchKernel(self->kernel_func, grid.x, grid.y, 1, bx, by, 1, 0, self->hip_stream, args, nullptr);
-        if (herr != hipSuccess) {
-            GST_ERROR_OBJECT(self, "i420_nv12 kernel launch failed: %s", hipGetErrorString(herr));
-            return GST_FLOW_ERROR;
-        }
+		// Interleave U+V → NV12 UV via compiled kernel
+		void* args[] = {&dst_uv, &pitch_i, &pu, &pv, &w, &h};
+		int bx = 32, by = 16;
+		dim3 grid((w / 2 + bx - 1) / bx, (h / 2 + by - 1) / by);
+		herr = hipModuleLaunchKernel(self->kernel_func, grid.x, grid.y, 1, bx, by, 1, 0, self->hip_stream, args, nullptr);
+		if (herr != hipSuccess) {
+			GST_ERROR_OBJECT(self, "i420_nv12 kernel launch failed: %s", hipGetErrorString(herr));
+			return GST_FLOW_ERROR;
+		}
 
-        GstBuffer* out = dmabuf_from_gbm_bo(self, self->gpu_size, GST_VIDEO_FORMAT_NV12, w, h);
-        if (!out)
-            return GST_FLOW_ERROR;
-        gst_buffer_remove_all_memory(outbuf);
-        gst_buffer_append_memory(outbuf, gst_buffer_get_memory(out, 0));
-        {
-            gsize o[GST_VIDEO_MAX_PLANES] = {0, (gsize)(pitch * h)};
-            gint s[GST_VIDEO_MAX_PLANES] = {(gint)pitch, (gint)pitch};
-            if (!gst_buffer_get_video_meta(outbuf))
-                gst_buffer_add_video_meta_full(outbuf, GST_VIDEO_FRAME_FLAG_NONE, GST_VIDEO_FORMAT_NV12, w, h, 2, o, s);
-        }
-        gst_buffer_unref(out);
-        return GST_FLOW_OK;
-    }
+		GstBuffer* out = dmabuf_from_gbm_bo(self, self->gpu_size, GST_VIDEO_FORMAT_NV12, w, h);
+		if (!out)
+			return GST_FLOW_ERROR;
+		gst_buffer_remove_all_memory(outbuf);
+		gst_buffer_append_memory(outbuf, gst_buffer_get_memory(out, 0));
+		{
+			gsize o[GST_VIDEO_MAX_PLANES] = {0, (gsize)(pitch * h)};
+			gint s[GST_VIDEO_MAX_PLANES] = {(gint)pitch, (gint)pitch};
+			if (!gst_buffer_get_video_meta(outbuf))
+				gst_buffer_add_video_meta_full(outbuf, GST_VIDEO_FRAME_FLAG_NONE, GST_VIDEO_FORMAT_NV12, w, h, 2, o, s);
+		}
+		gst_buffer_unref(out);
+		return GST_FLOW_OK;
+	}
 
-    // ─── CPU upload path: copy host I420 → GPU NV12 ────────────
-    GstMapInfo in_map;
-    if (!gst_buffer_map(inbuf, &in_map, GST_MAP_READ))
-        return GST_FLOW_ERROR;
+	// ─── CPU upload path: copy host I420 → GPU NV12 ────────────
+	GstMapInfo in_map;
+	if (!gst_buffer_map(inbuf, &in_map, GST_MAP_READ))
+		return GST_FLOW_ERROR;
 
-    gint s0 = self->in_stride > 0 ? self->in_stride : w;
-    gint su = w / 2; // U/V plane stride for I420
+	gint s0 = self->in_stride > 0 ? self->in_stride : w;
+	gint su = w / 2; // U/V plane stride for I420
 
-    // Y plane
-    for (gint y = 0; y < h; y++)
-        (void)hipMemcpyAsync((guint8*)self->d_image + y * pitch, in_map.data + y * s0, (gsize)w, hipMemcpyHostToDevice, self->hip_stream);
+	// Y plane
+	for (gint y = 0; y < h; y++)
+		(void)hipMemcpyAsync((guint8*)self->d_image + y * pitch, in_map.data + y * s0, (gsize)w, hipMemcpyHostToDevice, self->hip_stream);
 
-    // Interleave U+V → NV12 UV on host then upload
-    const uint8_t* src_u = in_map.data + s0 * h;
-    const uint8_t* src_v = src_u + (size_t)(w / 2) * (h / 2);
-    std::vector<uint8_t> uv_buf(pitch * (h / 2));
-    for (gint y = 0; y < h / 2; y++)
-        for (gint x = 0; x < w / 2; x++) {
-            uv_buf[y * pitch + x * 2] = src_u[y * su + x];
-            uv_buf[y * pitch + x * 2 + 1] = src_v[y * su + x];
-        }
-    (void)hipMemcpyAsync((guint8*)self->d_image + pitch * h, uv_buf.data(), pitch * (h / 2), hipMemcpyHostToDevice, self->hip_stream);
-    gst_buffer_unmap(inbuf, &in_map);
+	// Interleave U+V → NV12 UV on host then upload
+	const uint8_t* src_u = in_map.data + s0 * h;
+	const uint8_t* src_v = src_u + (size_t)(w / 2) * (h / 2);
+	std::vector<uint8_t> uv_buf(pitch * (h / 2));
+	for (gint y = 0; y < h / 2; y++)
+		for (gint x = 0; x < w / 2; x++) {
+			uv_buf[y * pitch + x * 2] = src_u[y * su + x];
+			uv_buf[y * pitch + x * 2 + 1] = src_v[y * su + x];
+		}
+	(void)hipMemcpyAsync((guint8*)self->d_image + pitch * h, uv_buf.data(), pitch * (h / 2), hipMemcpyHostToDevice, self->hip_stream);
+	gst_buffer_unmap(inbuf, &in_map);
 
-    GstBuffer* out = dmabuf_from_gbm_bo(self, self->gpu_size, GST_VIDEO_FORMAT_NV12, w, h);
-    if (!out)
-        return GST_FLOW_ERROR;
-    gst_buffer_remove_all_memory(outbuf);
-    gst_buffer_append_memory(outbuf, gst_buffer_get_memory(out, 0));
-    {
-        gsize o[GST_VIDEO_MAX_PLANES] = {0, (gsize)(pitch * h)};
-        gint s[GST_VIDEO_MAX_PLANES] = {(gint)pitch, (gint)pitch};
-        if (!gst_buffer_get_video_meta(outbuf))
-            gst_buffer_add_video_meta_full(outbuf, GST_VIDEO_FRAME_FLAG_NONE, GST_VIDEO_FORMAT_NV12, w, h, 2, o, s);
-    }
-    gst_buffer_unref(out);
-    return GST_FLOW_OK;
+	GstBuffer* out = dmabuf_from_gbm_bo(self, self->gpu_size, GST_VIDEO_FORMAT_NV12, w, h);
+	if (!out)
+		return GST_FLOW_ERROR;
+	gst_buffer_remove_all_memory(outbuf);
+	gst_buffer_append_memory(outbuf, gst_buffer_get_memory(out, 0));
+	{
+		gsize o[GST_VIDEO_MAX_PLANES] = {0, (gsize)(pitch * h)};
+		gint s[GST_VIDEO_MAX_PLANES] = {(gint)pitch, (gint)pitch};
+		if (!gst_buffer_get_video_meta(outbuf))
+			gst_buffer_add_video_meta_full(outbuf, GST_VIDEO_FRAME_FLAG_NONE, GST_VIDEO_FORMAT_NV12, w, h, 2, o, s);
+	}
+	gst_buffer_unref(out);
+	return GST_FLOW_OK;
 }
 
 // ─── transform ──────────────────────────────────────────────────────
@@ -989,79 +988,77 @@ static GstFlowReturn conv_sys_i420_to_dmabuf_nv12(GstMagmaVideoConvert* self, Gs
  * @return GST_FLOW_OK on success
  */
 static GstFlowReturn gst_magma_videoconvert_transform(GstBaseTransform* trans, GstBuffer* inbuf, GstBuffer* outbuf) {
-    GstMagmaVideoConvert* self = GST_MAGMA_VIDEOCONVERT(trans);
+	GstMagmaVideoConvert* self = GST_MAGMA_VIDEOCONVERT(trans);
 
-    if (!self->convert) {
-        // Passthrough:
-        // 1) MagmaHipMeta → D2H to system memory (compatible with standard elements)
-        // 2) DMABuf at index 0 → zero-copy passthrough
-        // 3) Anything else → plain memory copy
-        MagmaHipMeta* hmeta = magma_buffer_get_hip_meta(inbuf);
-        if (hmeta) {
-            gsize total = (gsize)self->in_width * self->in_height * 3 / 2;
-            GstBuffer* sys_buf = gst_buffer_new_and_alloc(total);
-            GstMapInfo map;
-            gst_buffer_map(sys_buf, &map, GST_MAP_WRITE);
-            (void)hipMemcpy(map.data, hmeta->d_ptr, total, hipMemcpyDeviceToHost);
-            gst_buffer_unmap(sys_buf, &map);
+	if (!self->convert) {
+		// Passthrough:
+		// 1) MagmaHipMeta → D2H to system memory (compatible with standard elements)
+		// 2) DMABuf at index 0 → zero-copy passthrough
+		// 3) Anything else → plain memory copy
+		MagmaHipMeta* hmeta = magma_buffer_get_hip_meta(inbuf);
+		if (hmeta) {
+			gsize total = (gsize)self->in_width * self->in_height * 3 / 2;
+			GstBuffer* sys_buf = gst_buffer_new_and_alloc(total);
+			GstMapInfo map;
+			gst_buffer_map(sys_buf, &map, GST_MAP_WRITE);
+			(void)hipMemcpy(map.data, hmeta->d_ptr, total, hipMemcpyDeviceToHost);
+			gst_buffer_unmap(sys_buf, &map);
 
-            gst_buffer_remove_all_memory(outbuf);
-            gst_buffer_append_memory(outbuf, gst_buffer_get_memory(sys_buf, 0));
-            gst_buffer_unref(sys_buf);
-        } else {
-            GstMemory* in_mem = gst_buffer_peek_memory(inbuf, 0);
-            if (in_mem && gst_is_dmabuf_memory(in_mem)) {
-                gst_buffer_remove_all_memory(outbuf);
-                gst_buffer_append_memory(outbuf, gst_memory_ref(in_mem));
-                GstVideoMeta* vmeta = gst_buffer_get_video_meta(inbuf);
-                if (vmeta && !gst_buffer_get_video_meta(outbuf))
-                    gst_buffer_add_video_meta_full(outbuf, GST_VIDEO_FRAME_FLAG_NONE,
-                        vmeta->format, vmeta->width, vmeta->height,
-                        vmeta->n_planes, vmeta->offset, vmeta->stride);
-            } else {
-                gst_buffer_remove_all_memory(outbuf);
-                gst_buffer_append_memory(outbuf, gst_memory_ref(in_mem));
-            }
-        }
-    } else {
-        GstFlowReturn ret = self->convert(self, inbuf, outbuf);
-        if (ret != GST_FLOW_OK)
-            return ret;
-    }
+			gst_buffer_remove_all_memory(outbuf);
+			gst_buffer_append_memory(outbuf, gst_buffer_get_memory(sys_buf, 0));
+			gst_buffer_unref(sys_buf);
+		} else {
+			GstMemory* in_mem = gst_buffer_peek_memory(inbuf, 0);
+			if (in_mem && gst_is_dmabuf_memory(in_mem)) {
+				gst_buffer_remove_all_memory(outbuf);
+				gst_buffer_append_memory(outbuf, gst_memory_ref(in_mem));
+				GstVideoMeta* vmeta = gst_buffer_get_video_meta(inbuf);
+				if (vmeta && !gst_buffer_get_video_meta(outbuf))
+					gst_buffer_add_video_meta_full(outbuf, GST_VIDEO_FRAME_FLAG_NONE, vmeta->format, vmeta->width, vmeta->height, vmeta->n_planes, vmeta->offset, vmeta->stride);
+			} else {
+				gst_buffer_remove_all_memory(outbuf);
+				gst_buffer_append_memory(outbuf, gst_memory_ref(in_mem));
+			}
+		}
+	} else {
+		GstFlowReturn ret = self->convert(self, inbuf, outbuf);
+		if (ret != GST_FLOW_OK)
+			return ret;
+	}
 
-    GST_BUFFER_PTS(outbuf) = GST_BUFFER_PTS(inbuf);
-    GST_BUFFER_DURATION(outbuf) = GST_BUFFER_DURATION(inbuf);
-    GST_BUFFER_OFFSET(outbuf) = GST_BUFFER_OFFSET(inbuf);
-    GST_BUFFER_OFFSET_END(outbuf) = GST_BUFFER_OFFSET_END(inbuf);
-    return GST_FLOW_OK;
+	GST_BUFFER_PTS(outbuf) = GST_BUFFER_PTS(inbuf);
+	GST_BUFFER_DURATION(outbuf) = GST_BUFFER_DURATION(inbuf);
+	GST_BUFFER_OFFSET(outbuf) = GST_BUFFER_OFFSET(inbuf);
+	GST_BUFFER_OFFSET_END(outbuf) = GST_BUFFER_OFFSET_END(inbuf);
+	return GST_FLOW_OK;
 }
 
 /** --- CLASS INIT --- */
 static void gst_magma_videoconvert_class_init(GstMagmaVideoConvertClass* klass) {
-    GstElementClass* element_class = GST_ELEMENT_CLASS(klass);
-    GObjectClass* object_class = G_OBJECT_CLASS(klass);
-    GstBaseTransformClass* trans_class = GST_BASE_TRANSFORM_CLASS(klass);
+	GstElementClass* element_class = GST_ELEMENT_CLASS(klass);
+	GObjectClass* object_class = G_OBJECT_CLASS(klass);
+	GstBaseTransformClass* trans_class = GST_BASE_TRANSFORM_CLASS(klass);
 
-    object_class->set_property = gst_magma_videoconvert_set_property;
-    object_class->get_property = gst_magma_videoconvert_get_property;
-    object_class->finalize = gst_magma_videoconvert_finalize;
+	object_class->set_property = gst_magma_videoconvert_set_property;
+	object_class->get_property = gst_magma_videoconvert_get_property;
+	object_class->finalize = gst_magma_videoconvert_finalize;
 
-    gst_element_class_add_static_pad_template(element_class, &sink_template);
-    gst_element_class_add_static_pad_template(element_class, &src_template);
+	gst_element_class_add_static_pad_template(element_class, &sink_template);
+	gst_element_class_add_static_pad_template(element_class, &src_template);
 
-    gst_element_class_set_static_metadata(element_class, "Magma Video Converter", "Filter/Converter/Video", "Upload CPU NV12 to GPU DMABuf NV12 using GBM+HIP", "Magma");
+	gst_element_class_set_static_metadata(element_class, "Magma Video Converter", "Filter/Converter/Video", "Upload CPU NV12 to GPU DMABuf NV12 using GBM+HIP", "Magma");
 
-    trans_class->transform_caps = gst_magma_videoconvert_transform_caps;
-    trans_class->set_caps = gst_magma_videoconvert_set_caps;
-    trans_class->transform_size = gst_magma_videoconvert_transform_size;
-    trans_class->transform = gst_magma_videoconvert_transform;
+	trans_class->transform_caps = gst_magma_videoconvert_transform_caps;
+	trans_class->set_caps = gst_magma_videoconvert_set_caps;
+	trans_class->transform_size = gst_magma_videoconvert_transform_size;
+	trans_class->transform = gst_magma_videoconvert_transform;
 
-    GST_DEBUG_CATEGORY_INIT(magma_videoconvert_debug, "magma_videoconvert", 0, "Magma Video Converter");
+	GST_DEBUG_CATEGORY_INIT(magma_videoconvert_debug, "magma_videoconvert", 0, "Magma Video Converter");
 }
 
 /** --- PLUGIN REGISTRATION --- */
 static gboolean plugin_init(GstPlugin* plugin) {
-    return gst_element_register(plugin, "mgmvideoconvert", GST_RANK_NONE, GST_TYPE_MAGMA_VIDEOCONVERT);
+	return gst_element_register(plugin, "mgmvideoconvert", GST_RANK_NONE, GST_TYPE_MAGMA_VIDEOCONVERT);
 }
 
 GST_PLUGIN_DEFINE(GST_VERSION_MAJOR, GST_VERSION_MINOR, mgmvideoconvert, "Magma Video Converter Plugin", plugin_init, "0.1.0", "LGPL", "magma", "https://imeguras.eu.org")

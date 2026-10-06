@@ -17,22 +17,22 @@
  * @return Newly allocated MagmaInferObject
  */
 MagmaInferObject* magma_infer_object_new(guint class_id, const gchar* label, gfloat confidence, gfloat x, gfloat y, gfloat w, gfloat h) {
-    MagmaInferObject* obj = g_slice_new0(MagmaInferObject);
-    obj->class_id = class_id;
-    obj->label = g_strdup(label);
-    obj->confidence = confidence;
-    obj->x = x;
-    obj->y = y;
-    obj->width = w;
-    obj->height = h;
-    return obj;
+	MagmaInferObject* obj = g_slice_new0(MagmaInferObject);
+	obj->class_id = class_id;
+	obj->label = g_strdup(label);
+	obj->confidence = confidence;
+	obj->x = x;
+	obj->y = y;
+	obj->width = w;
+	obj->height = h;
+	return obj;
 }
 
 void magma_infer_object_free(MagmaInferObject* obj) {
-    if (!obj)
-        return;
-    g_free(obj->label);
-    g_slice_free(MagmaInferObject, obj);
+	if (!obj)
+		return;
+	g_free(obj->label);
+	g_slice_free(MagmaInferObject, obj);
 }
 
 /* ---------- MagmaInferenceMeta GstMeta ---------- */
@@ -40,102 +40,103 @@ void magma_infer_object_free(MagmaInferObject* obj) {
 static gsize _magma_inference_meta_quark = 0;
 
 GType magma_inference_meta_api_get_type(void) {
-    if (g_once_init_enter(&_magma_inference_meta_quark)) {
-        const gchar* tags[] = {NULL};
-        GType t = gst_meta_api_type_register("MagmaInferenceMetaAPI", tags);
-        g_once_init_leave(&_magma_inference_meta_quark, (gsize)t);
-    }
-    return (GType)_magma_inference_meta_quark;
+	if (g_once_init_enter(&_magma_inference_meta_quark)) {
+		const gchar* tags[] = {NULL};
+		GType t = gst_meta_api_type_register("MagmaInferenceMetaAPI", tags);
+		g_once_init_leave(&_magma_inference_meta_quark, (gsize)t);
+	}
+	return (GType)_magma_inference_meta_quark;
 }
 
 static gboolean magma_inference_meta_init(GstMeta* meta, gpointer params, GstBuffer* buffer) {
-    MagmaInferenceMeta* m = (MagmaInferenceMeta*)meta;
-    m->source_width = 0;
-    m->source_height = 0;
-    m->roi_x = m->roi_y = m->roi_w = m->roi_h = 0;
-    m->model_width = m->model_height = 0;
-    m->num_objects = 0;
-    m->objects_gpu = NULL;
-    m->output_tensors = NULL;
-    m->num_masks = 0;
-    m->masks_gpu = NULL;
-    m->mask_width = 0;
-    m->mask_height = 0;
-    m->has_anomaly = FALSE;
-    m->anomaly_score = 0.0f;
-    m->anomaly_heatmap = NULL;
-    return TRUE;
+	MagmaInferenceMeta* m = (MagmaInferenceMeta*)meta;
+	m->source_width = 0;
+	m->source_height = 0;
+	m->roi_x = m->roi_y = m->roi_w = m->roi_h = 0;
+	m->model_width = m->model_height = 0;
+	m->num_objects = 0;
+	m->objects_gpu = NULL;
+	m->output_tensors = NULL;
+	m->num_masks = 0;
+	m->masks_gpu = NULL;
+	m->mask_width = 0;
+	m->mask_height = 0;
+	m->has_anomaly = FALSE;
+	m->anomaly_score = 0.0f;
+	m->anomaly_heatmap = NULL;
+	return TRUE;
 }
 
 static void magma_inference_meta_free(GstMeta* meta, GstBuffer* buffer) {
-    MagmaInferenceMeta* m = (MagmaInferenceMeta*)meta;
-    if (m->objects_gpu) {
-        gst_memory_unref(m->objects_gpu);
-        m->objects_gpu = NULL;
-    }
-    if (m->output_tensors) {
-        for (guint i = 0; i < m->output_tensors->len; i++) {
-            GstMemory* mem = (GstMemory*)g_ptr_array_index(m->output_tensors, i);
-            gst_memory_unref(mem);
-        }
-        g_ptr_array_unref(m->output_tensors);
-        m->output_tensors = NULL;
-    }
-    if (m->masks_gpu) {
-        gst_memory_unref(m->masks_gpu);
-        m->masks_gpu = NULL;
-    }
-    if (m->anomaly_heatmap) {
-        gst_memory_unref(m->anomaly_heatmap);
-        m->anomaly_heatmap = NULL;
-    }
+	MagmaInferenceMeta* m = (MagmaInferenceMeta*)meta;
+	if (m->objects_gpu) {
+		gst_memory_unref(m->objects_gpu);
+		m->objects_gpu = NULL;
+	}
+	if (m->output_tensors) {
+		for (guint i = 0; i < m->output_tensors->len; i++) {
+			GstMemory* mem = (GstMemory*)g_ptr_array_index(m->output_tensors, i);
+			gst_memory_unref(mem);
+		}
+		g_ptr_array_unref(m->output_tensors);
+		m->output_tensors = NULL;
+	}
+	if (m->masks_gpu) {
+		gst_memory_unref(m->masks_gpu);
+		m->masks_gpu = NULL;
+	}
+	if (m->anomaly_heatmap) {
+		gst_memory_unref(m->anomaly_heatmap);
+		m->anomaly_heatmap = NULL;
+	}
 }
 
 static gboolean magma_inference_meta_transform(GstBuffer* transbuf, GstMeta* meta, GstBuffer* buffer, GQuark type, gpointer data) {
-    MagmaInferenceMeta* src = (MagmaInferenceMeta*)meta;
-    if (type != 0)
-        return FALSE;
-    MagmaInferenceMeta* dest = magma_buffer_add_inference_meta(transbuf, src->source_width, src->source_height);
-    if (!dest)
-        return FALSE;
-    dest->roi_x = src->roi_x;
-    dest->roi_y = src->roi_y;
-    dest->roi_w = src->roi_w;
-    dest->roi_h = src->roi_h;
-    dest->model_width = src->model_width;
-    dest->model_height = src->model_height;
-    dest->num_objects = src->num_objects;
-    if (src->objects_gpu)
-        dest->objects_gpu = gst_memory_ref(src->objects_gpu);
-    if (src->output_tensors) {
-        dest->output_tensors = g_ptr_array_new_with_free_func((GDestroyNotify)gst_memory_unref);
-        for (guint i = 0; i < src->output_tensors->len; i++) {
-            GstMemory* mem = (GstMemory*)g_ptr_array_index(src->output_tensors, i);
-            g_ptr_array_add(dest->output_tensors, gst_memory_ref(mem));
-        }
-    }
-    dest->num_masks = src->num_masks;
-    dest->mask_width = src->mask_width;
-    dest->mask_height = src->mask_height;
-    if (src->masks_gpu)
-        dest->masks_gpu = gst_memory_ref(src->masks_gpu);
-    dest->has_anomaly = src->has_anomaly;
-    dest->anomaly_score = src->anomaly_score;
-    if (src->anomaly_heatmap)
-        dest->anomaly_heatmap = gst_memory_ref(src->anomaly_heatmap);
-    return TRUE;
+	MagmaInferenceMeta* src = (MagmaInferenceMeta*)meta;
+	if (type != 0)
+		return FALSE;
+	MagmaInferenceMeta* dest = magma_buffer_add_inference_meta(transbuf, src->source_width, src->source_height);
+	if (!dest)
+		return FALSE;
+	dest->roi_x = src->roi_x;
+	dest->roi_y = src->roi_y;
+	dest->roi_w = src->roi_w;
+	dest->roi_h = src->roi_h;
+	dest->model_width = src->model_width;
+	dest->model_height = src->model_height;
+	dest->num_objects = src->num_objects;
+	if (src->objects_gpu)
+		dest->objects_gpu = gst_memory_ref(src->objects_gpu);
+	if (src->output_tensors) {
+		dest->output_tensors = g_ptr_array_new_with_free_func((GDestroyNotify)gst_memory_unref);
+		for (guint i = 0; i < src->output_tensors->len; i++) {
+			GstMemory* mem = (GstMemory*)g_ptr_array_index(src->output_tensors, i);
+			g_ptr_array_add(dest->output_tensors, gst_memory_ref(mem));
+		}
+	}
+	dest->num_masks = src->num_masks;
+	dest->mask_width = src->mask_width;
+	dest->mask_height = src->mask_height;
+	if (src->masks_gpu)
+		dest->masks_gpu = gst_memory_ref(src->masks_gpu);
+	dest->has_anomaly = src->has_anomaly;
+	dest->anomaly_score = src->anomaly_score;
+	if (src->anomaly_heatmap)
+		dest->anomaly_heatmap = gst_memory_ref(src->anomaly_heatmap);
+	return TRUE;
 }
 
 static gsize _magma_inference_meta_info = 0;
 
 const GstMetaInfo* magma_inference_meta_get_info(void) {
-    if (g_once_init_enter(&_magma_inference_meta_info)) {
-        const GstMetaInfo* info = gst_meta_register(MAGMA_INFERENCE_META_API_TYPE, "MagmaInferenceMeta", sizeof(MagmaInferenceMeta), magma_inference_meta_init, magma_inference_meta_free, magma_inference_meta_transform);
-        if (!info)
-            info = gst_meta_get_info("MagmaInferenceMeta");
-        g_once_init_leave(&_magma_inference_meta_info, (gsize)info);
-    }
-    return (const GstMetaInfo*)_magma_inference_meta_info;
+	if (g_once_init_enter(&_magma_inference_meta_info)) {
+		const GstMetaInfo* info =
+		    gst_meta_register(MAGMA_INFERENCE_META_API_TYPE, "MagmaInferenceMeta", sizeof(MagmaInferenceMeta), magma_inference_meta_init, magma_inference_meta_free, magma_inference_meta_transform);
+		if (!info)
+			info = gst_meta_get_info("MagmaInferenceMeta");
+		g_once_init_leave(&_magma_inference_meta_info, (gsize)info);
+	}
+	return (const GstMetaInfo*)_magma_inference_meta_info;
 }
 
 /**
@@ -150,10 +151,10 @@ const GstMetaInfo* magma_inference_meta_get_info(void) {
  * @return Pointer to the attached meta, or NULL on failure
  */
 MagmaInferenceMeta* magma_buffer_add_inference_meta(GstBuffer* buffer, guint source_width, guint source_height) {
-    MagmaInferenceMeta* m = (MagmaInferenceMeta*)gst_buffer_add_meta(buffer, magma_inference_meta_get_info(), NULL);
-    if (m) {
-        m->source_width = source_width;
-        m->source_height = source_height;
-    }
-    return m;
+	MagmaInferenceMeta* m = (MagmaInferenceMeta*)gst_buffer_add_meta(buffer, magma_inference_meta_get_info(), NULL);
+	if (m) {
+		m->source_width = source_width;
+		m->source_height = source_height;
+	}
+	return m;
 }

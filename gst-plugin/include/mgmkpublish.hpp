@@ -26,15 +26,15 @@ G_DECLARE_FINAL_TYPE(GstMagmaPublish, gst_magma_publish, GST, MAGMA_PUBLISH, Gst
  * @property extra-flags Additional librdkafka config flags
  */
 struct _GstMagmaPublish {
-    GstBaseSink parent;
+	GstBaseSink parent;
 
-    gchar* broker;
-    gchar* topic;
-    gchar* client_id;
-    gchar* compression;
-    gchar* extra_flags;
+	gchar* broker;
+	gchar* topic;
+	gchar* client_id;
+	gchar* compression;
+	gchar* extra_flags;
 
-    void* rk_handle;
+	void* rk_handle;
 };
 
 G_END_DECLS

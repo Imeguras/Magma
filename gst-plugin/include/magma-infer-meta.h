@@ -18,9 +18,9 @@ G_BEGIN_DECLS
  * Stored in a DMABuf-backed GstMemory for zero-copy transfer.
  */
 typedef struct {
-    guint class_id;
-    gfloat confidence;
-    gfloat x, y, width, height;
+	guint class_id;
+	gfloat confidence;
+	gfloat x, y, width, height;
 } MagmaInferObjectGPU;
 
 /**
@@ -28,10 +28,10 @@ typedef struct {
  */
 typedef struct _MagmaInferObject MagmaInferObject;
 struct _MagmaInferObject {
-    guint class_id;
-    gchar* label;
-    gfloat confidence;
-    gfloat x, y, width, height;
+	guint class_id;
+	gchar* label;
+	gfloat confidence;
+	gfloat x, y, width, height;
 };
 
 /**
@@ -44,36 +44,36 @@ struct _MagmaInferObject {
 typedef struct _MagmaInferenceMeta MagmaInferenceMeta;
 
 struct _MagmaInferenceMeta {
-    GstMeta meta;
+	GstMeta meta;
 
-    /** Source frame dimensions (for coordinate mapping) */
-    guint source_width;
-    guint source_height;
+	/** Source frame dimensions (for coordinate mapping) */
+	guint source_width;
+	guint source_height;
 
-    /** ROI within the source frame that was fed to the model */
-    gint roi_x, roi_y, roi_w, roi_h;
+	/** ROI within the source frame that was fed to the model */
+	gint roi_x, roi_y, roi_w, roi_h;
 
-    /** Model input dimensions */
-    gint model_width, model_height;
+	/** Model input dimensions */
+	gint model_width, model_height;
 
-    /** Number of detected objects */
-    guint num_objects;
+	/** Number of detected objects */
+	guint num_objects;
 
-    /** GPU DMABuf containing MagmaInferObjectGPU array */
-    GstMemory* objects_gpu;
+	/** GPU DMABuf containing MagmaInferObjectGPU array */
+	GstMemory* objects_gpu;
 
-    /** Raw model output tensors (GPU DMABuf array) */
-    GPtrArray* output_tensors;
+	/** Raw model output tensors (GPU DMABuf array) */
+	GPtrArray* output_tensors;
 
-    /** Optional segmentation masks (GPU DMABuf — float[num_masks][mask_h][mask_w]) */
-    guint       num_masks;
-    GstMemory*  masks_gpu;
-    guint       mask_width, mask_height;
+	/** Optional segmentation masks (GPU DMABuf — float[num_masks][mask_h][mask_w]) */
+	guint num_masks;
+	GstMemory* masks_gpu;
+	guint mask_width, mask_height;
 
-    /** Optional anomaly detection output */
-    gboolean    has_anomaly;
-    float       anomaly_score;
-    GstMemory*  anomaly_heatmap;
+	/** Optional anomaly detection output */
+	gboolean has_anomaly;
+	float anomaly_score;
+	GstMemory* anomaly_heatmap;
 };
 
 #define MAGMA_INFERENCE_META_API_TYPE (magma_inference_meta_api_get_type())
@@ -105,8 +105,7 @@ MagmaInferenceMeta* magma_buffer_add_inference_meta(GstBuffer* buffer, guint sou
  * @param h          Height (normalized 0..1)
  * @return Newly allocated MagmaInferObject (must be freed with magma_infer_object_free)
  */
-MagmaInferObject* magma_infer_object_new(guint class_id, const gchar* label, gfloat confidence,
-                                          gfloat x, gfloat y, gfloat w, gfloat h);
+MagmaInferObject* magma_infer_object_new(guint class_id, const gchar* label, gfloat confidence, gfloat x, gfloat y, gfloat w, gfloat h);
 
 /** @brief Free a MagmaInferObject allocated by magma_infer_object_new */
 void magma_infer_object_free(MagmaInferObject* obj);

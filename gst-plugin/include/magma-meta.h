@@ -26,13 +26,13 @@ typedef struct _MagmaSemanticMeta MagmaSemanticMeta;
  * cropped from the source frame.
  */
 struct _MagmaTensorMeta {
-    GstMeta meta;
+	GstMeta meta;
 
-    GstMemory* tensor_mem;           /** DMABuf-backed memory containing the float32 RGB tensor */
-    gint width;                      /** Tensor width in pixels (e.g. 640) */
-    gint height;                     /** Tensor height in pixels (e.g. 640) */
-    gint channels;                   /** Number of channels (typically 3 for RGB) */
-    gint roi_x, roi_y, roi_w, roi_h; /** ROI crop rectangle within the source frame */
+	GstMemory* tensor_mem;           /** DMABuf-backed memory containing the float32 RGB tensor */
+	gint width;                      /** Tensor width in pixels (e.g. 640) */
+	gint height;                     /** Tensor height in pixels (e.g. 640) */
+	gint channels;                   /** Number of channels (typically 3 for RGB) */
+	gint roi_x, roi_y, roi_w, roi_h; /** ROI crop rectangle within the source frame */
 };
 
 /** @brief Query the GType for MagmaTensorMeta */
@@ -63,16 +63,16 @@ MagmaTensorMeta* magma_buffer_add_tensor_meta(GstBuffer* buffer, GstMemory* tens
  * current HIP device.
  */
 struct _MagmaHipMeta {
-    GstMeta meta;
+	GstMeta meta;
 
-    /** HIP device pointer to the NV12 frame data */
-    hipDeviceptr_t d_ptr;
+	/** HIP device pointer to the NV12 frame data */
+	hipDeviceptr_t d_ptr;
 
-    /** Optional release callback (called when the meta is freed) */
-    void (*release)(void*);
+	/** Optional release callback (called when the meta is freed) */
+	void (*release)(void*);
 
-    /** User data passed to release callback */
-    void* user_data;
+	/** User data passed to release callback */
+	void* user_data;
 };
 
 /** @brief Query the GType for MagmaHipMeta */
@@ -106,36 +106,36 @@ MagmaHipMeta* magma_buffer_add_hip_meta(GstBuffer* buffer, hipDeviceptr_t d_ptr,
  *       used by magma_register_to_primitives().
  */
 struct _MagmaSemanticMeta {
-    GstMeta meta;
+	GstMeta meta;
 
-    /** Type identifier (GQuark of "magma.<kind>.v<version>") */
-    GQuark type_id;
+	/** Type identifier (GQuark of "magma.<kind>.v<version>") */
+	GQuark type_id;
 
-    /** GPU memory blob — interpreted by the converter registered for type_id.
-     *  For detection: MagmaInferObjectGPU[] (same layout as
-     *  MagmaInferenceMeta.objects_gpu). For other types: parser-defined. */
-    GstMemory* data_gpu;
+	/** GPU memory blob — interpreted by the converter registered for type_id.
+	 *  For detection: MagmaInferObjectGPU[] (same layout as
+	 *  MagmaInferenceMeta.objects_gpu). For other types: parser-defined. */
+	GstMemory* data_gpu;
 
-    /** Source-frame dimensions at inference time (for coord remapping debug) */
-    gint source_width;
-    gint source_height;
+	/** Source-frame dimensions at inference time (for coord remapping debug) */
+	gint source_width;
+	gint source_height;
 
-    /** Optional: ROI within source frame (0,0,0,0 = full frame) */
-    gint roi_x, roi_y, roi_w, roi_h;
+	/** Optional: ROI within source frame (0,0,0,0 = full frame) */
+	gint roi_x, roi_y, roi_w, roi_h;
 
-    /** Optional: model input dimensions (for denormalisation if needed) */
-    gint model_width, model_height;
+	/** Optional: model input dimensions (for denormalisation if needed) */
+	gint model_width, model_height;
 
-    /** Optional: instance segmentation masks (CPU-copy buffer, matched 1:1 with data_gpu objects) */
-    GstMemory* masks_gpu;
-    gint       mask_count;
-    gint       mask_width;
-    gint       mask_height;
+	/** Optional: instance segmentation masks (CPU-copy buffer, matched 1:1 with data_gpu objects) */
+	GstMemory* masks_gpu;
+	gint mask_count;
+	gint mask_width;
+	gint mask_height;
 
-    /** GPU-resident mask + object data for direct GPU decode (0 = not set) */
-    hipDeviceptr_t d_masks_gpu;    /** compacted mask tensor on GPU */
-    hipDeviceptr_t d_objects_gpu;  /** compacted detection data on GPU (6 floats per object) */
-    gint           masks_gpu_bytes;
+	/** GPU-resident mask + object data for direct GPU decode (0 = not set) */
+	hipDeviceptr_t d_masks_gpu;   /** compacted mask tensor on GPU */
+	hipDeviceptr_t d_objects_gpu; /** compacted detection data on GPU (6 floats per object) */
+	gint masks_gpu_bytes;
 };
 
 /** @brief Query the GType for MagmaSemanticMeta */
@@ -153,18 +153,12 @@ const GstMetaInfo* magma_semantic_meta_get_info(void);
  * @param source_height Source frame height
  * @return Pointer to the newly-attached meta, or NULL on failure
  */
-MagmaSemanticMeta* magma_buffer_add_semantic_meta(GstBuffer* buffer,
-    GQuark type_id, GstMemory* data_gpu,
-    gint source_width, gint source_height);
+MagmaSemanticMeta* magma_buffer_add_semantic_meta(GstBuffer* buffer, GQuark type_id, GstMemory* data_gpu, gint source_width, gint source_height);
 
-MagmaSemanticMeta* magma_buffer_add_semantic_meta_full(GstBuffer* buffer,
-    GQuark type_id, GstMemory* data_gpu,
-    gint source_width, gint source_height,
-    GstMemory* masks_gpu, gint mask_count,
-    gint mask_width, gint mask_height);
+MagmaSemanticMeta* magma_buffer_add_semantic_meta_full(
+    GstBuffer* buffer, GQuark type_id, GstMemory* data_gpu, gint source_width, gint source_height, GstMemory* masks_gpu, gint mask_count, gint mask_width, gint mask_height);
 
 #define MAGMA_SEMANTIC_META_API_TYPE (magma_semantic_meta_api_get_type())
-#define magma_buffer_get_semantic_meta(b) \
-    ((MagmaSemanticMeta*)gst_buffer_get_meta((b), MAGMA_SEMANTIC_META_API_TYPE))
+#define magma_buffer_get_semantic_meta(b) ((MagmaSemanticMeta*)gst_buffer_get_meta((b), MAGMA_SEMANTIC_META_API_TYPE))
 
 G_END_DECLS

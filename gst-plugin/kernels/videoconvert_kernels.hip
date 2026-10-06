@@ -10,14 +10,12 @@
  * @param width    Width of the full Y frame in pixels
  * @param height   Height of the full Y frame in pixels
  */
-extern "C" __global__ void i420_to_nv12_uv(
-    unsigned char* dst_uv, int dst_pitch,
-    const unsigned char* src_u, const unsigned char* src_v,
-    int width, int height) {
-  int x = blockIdx.x * blockDim.x + threadIdx.x;
-  int y = blockIdx.y * blockDim.y + threadIdx.y;
-  if (x >= width / 2 || y >= height / 2) return;
-  int uv_width = width / 2;
-  dst_uv[y * dst_pitch + x * 2]     = src_u[y * uv_width + x];
-  dst_uv[y * dst_pitch + x * 2 + 1] = src_v[y * uv_width + x];
+extern "C" __global__ void i420_to_nv12_uv(unsigned char* dst_uv, int dst_pitch, const unsigned char* src_u, const unsigned char* src_v, int width, int height) {
+	int x = blockIdx.x * blockDim.x + threadIdx.x;
+	int y = blockIdx.y * blockDim.y + threadIdx.y;
+	if (x >= width / 2 || y >= height / 2)
+		return;
+	int uv_width = width / 2;
+	dst_uv[y * dst_pitch + x * 2] = src_u[y * uv_width + x];
+	dst_uv[y * dst_pitch + x * 2 + 1] = src_v[y * uv_width + x];
 }

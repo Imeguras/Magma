@@ -70,7 +70,7 @@ test_mgmpreproc_tensor = executable('test-mgmpreproc-tensor',
                  gst_check_dep, hip_host_dep, gbm_dep, drm_dep, magma_meta_dep],
 )
 test('test-mgmpreproc-tensor', test_mgmpreproc_tensor,
-  depends: [mgmpreproc_shlib])
+  depends: [mgmpreproc_shlib], suite: 'gpu')
 
 # -----------------------------------------------------------
 # test-mgminfer-tensor-pipe — mgminfer reads MagmaTensorMeta,
@@ -88,7 +88,7 @@ test_mgminfer_tensor_pipe = executable('test-mgminfer-tensor-pipe',
                  gst_check_dep, hip_host_dep, gbm_dep, drm_dep],
 )
 test('test-mgminfer-tensor-pipe', test_mgminfer_tensor_pipe,
-  depends: [mgminfer_shlib])
+  depends: [mgminfer_shlib], suite: 'gpu')
 
 # -----------------------------------------------------------
 # test-mgmserialize — serializes MagmaInferenceMeta → JSON/protobuf

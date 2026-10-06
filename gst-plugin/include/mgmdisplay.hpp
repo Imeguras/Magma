@@ -36,48 +36,48 @@ G_DECLARE_FINAL_TYPE(GstMagmaDisplay, gst_magma_display, GST, MAGMA_DISPLAY, Gst
  * @property show-fps  Overlay FPS counter (instant + rolling average) on the display
  */
 struct _GstMagmaDisplay {
-    GstBaseSink parent;
+	GstBaseSink parent;
 
-    gint in_width;
-    gint in_height;
+	gint in_width;
+	gint in_height;
 
-    gboolean sync;
+	gboolean sync;
 
-    int drm_fd;
-    uint32_t crtc_id;
-    uint32_t connector_id;
-    uint32_t current_fb_id;
-    drmModeModeInfo mode;
-    drmModeCrtcPtr saved_crtc;
-    gboolean drm_initialized;
-    volatile gboolean flip_pending;
+	int drm_fd;
+	uint32_t crtc_id;
+	uint32_t connector_id;
+	uint32_t current_fb_id;
+	drmModeModeInfo mode;
+	drmModeCrtcPtr saved_crtc;
+	gboolean drm_initialized;
+	volatile gboolean flip_pending;
 
-    struct gbm_device* gbm_dev;
-    struct gbm_bo* gbm_bo;
-    uint32_t gbm_stride;
-    uint32_t gbm_fourcc;
+	struct gbm_device* gbm_dev;
+	struct gbm_bo* gbm_bo;
+	uint32_t gbm_stride;
+	uint32_t gbm_fourcc;
 
-    hipExternalMemory_t ext_mem;
-    hipDeviceptr_t d_image;
-    gsize gpu_size;
-    gboolean gpu_ready;
+	hipExternalMemory_t ext_mem;
+	hipDeviceptr_t d_image;
+	gsize gpu_size;
+	gboolean gpu_ready;
 
-    hipStream_t hip_stream;
+	hipStream_t hip_stream;
 
-    hipModule_t rgb_module;
-    hipFunction_t nv12_to_rgb_func;
+	hipModule_t rgb_module;
+	hipFunction_t nv12_to_rgb_func;
 
-    gboolean show_fps;
+	gboolean show_fps;
 
-    gdouble fps_instant;
-    gdouble fps_avg;
-    gdouble fps_ema_factor;
-    guint64 fps_last_time;
+	gdouble fps_instant;
+	gdouble fps_avg;
+	gdouble fps_ema_factor;
+	guint64 fps_last_time;
 
-    hipModule_t fps_module;
-    hipFunction_t fps_func;
+	hipModule_t fps_module;
+	hipFunction_t fps_func;
 
-    guint64 frames_rendered;
+	guint64 frames_rendered;
 };
 
 G_END_DECLS
