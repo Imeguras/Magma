@@ -6,6 +6,7 @@
 [![Version](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Imeguras/Magma/badges/master/version.json)](https://github.com/Imeguras/Magma/tags)
 [![Format](https://github.com/Imeguras/Magma/actions/workflows/format.yml/badge.svg?branch=master)](https://github.com/Imeguras/Magma/actions/workflows/format.yml)
 [![License](https://github.com/Imeguras/Magma/actions/workflows/license.yml/badge.svg?branch=master)](https://github.com/Imeguras/Magma/actions/workflows/license.yml)
+
 Tired of watching proprietary nvidia scooping up the computer vision scene, with proprietary frameworks like DeepStream? Watch as the rocm melts into streaming molten magma!
 To put it bluntly the idea is not doing **the whole compatibility and flexibility over performance**, the reason is: 
 If nvidia won't play ball so whats the point of making a software more complex, if the bigger fish reaps the rewards of deep optimization?

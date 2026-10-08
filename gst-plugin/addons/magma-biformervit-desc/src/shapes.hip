@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 João Vieira <joaodavid2001@gmail.com>
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-
 #include <hip/hip_runtime.h>
 #include <stdint.h>
 
