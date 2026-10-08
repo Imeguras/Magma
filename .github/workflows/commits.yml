@@ -1,0 +1,36 @@
+name: Commits
+
+on:
+  push:
+    branches-ignore: [badges]
+  pull_request:
+
+jobs:
+  prefix:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check Feat/Fix prefixes
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          # New branch pushes have no "before"; only check the pushed tip then
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            RANGE="$HEAD -1"
+          else
+            RANGE="$BASE..$HEAD"
+          fi
+          # Exempt: merges, bot authors, reverts (see CONTRIBUTING.md)
+          log=$(git log --no-merges --format='%h %ae %s' $RANGE)
+          bad=$(printf '%s\n' "$log" | grep -Ev '^([0-9a-f]+ [^ ]+ (Feat|Fix): |[0-9a-f]+ [^ ]*\[bot\]@[^ ]+ |[0-9a-f]+ [^ ]+ Revert |$)' | cut -d' ' -f1,3- || true)
+          if [ -n "$bad" ]; then
+            echo "$bad" | while read -r line; do echo "::error::bad commit subject: $line"; done
+            echo "Subjects must start with 'Feat: ' or 'Fix: ' (see CONTRIBUTING.md)"
+            exit 1
+          fi
+          echo "All commit subjects OK"

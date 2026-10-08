@@ -1,0 +1,60 @@
+name: Bug report
+description: Something crashes, misbehaves or produces wrong results
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Security problems go through the Security tab instead (see SECURITY.md).
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you expected vs. what you got. Wrong detections? Crash? Stall?
+    validations:
+      required: true
+  - type: textarea
+    id: pipeline
+    attributes:
+      label: Pipeline
+      description: The full `gst-launch-1.0` command (or the code building the pipeline).
+      render: sh
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Output with `GST_DEBUG=magma*:5,mgm*:5` (trim if huge). Backtrace if it crashed.
+      render: text
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU
+      placeholder: e.g. RX 7800 XT (gfx1101)
+    validations:
+      required: true
+  - type: input
+    id: rocm
+    attributes:
+      label: ROCm version
+      placeholder: e.g. 7.2.3
+    validations:
+      required: true
+  - type: input
+    id: magma
+    attributes:
+      label: Magma version / commit
+      placeholder: e.g. v1.0.1 or 37b6d35
+    validations:
+      required: true
+  - type: input
+    id: distro
+    attributes:
+      label: Distro, kernel, GStreamer version
+      placeholder: e.g. Arch, 6.17, GStreamer 1.26 / Docker image
+  - type: input
+    id: model
+    attributes:
+      label: Model and parser plugin
+      placeholder: e.g. yolov8n.onnx + libyolov8-parser.so
