@@ -28,3 +28,16 @@ precedence = "override"
 SPDX-FileCopyrightText = "Unverified third-party sources"
 SPDX-License-Identifier = "LicenseRef-Unverified"
 
+# Third-party: stb_image (Sean Barrett), dual MIT / public domain, notice kept in-file
+[[annotations]]
+path = "gst-plugin/addons/magma-yolo/include/stb_image.h"
+precedence = "override"
+SPDX-FileCopyrightText = "2017 Sean Barrett"
+SPDX-License-Identifier = "MIT OR Unlicense"
+
+# Code of Ethics adapted from SQLite (public domain)
+[[annotations]]
+path = "CODE_OF_CONDUCT.md"
+precedence = "override"
+SPDX-FileCopyrightText = "SQLite developers"
+SPDX-License-Identifier = "LicenseRef-PublicDomain"

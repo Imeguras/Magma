@@ -3,10 +3,12 @@
 
 Usage: python3 scripts/check-license.py   (requires `reuse` on PATH and full git history)
 """
+import fnmatch
 import json
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 # LGPLv3 incorporates GPLv3 by reference, so its text must ship even though no file is tagged GPL.
@@ -35,8 +37,14 @@ for path in REQUIRED_TEXTS:
         errors.append(f"missing license text: {path}")
 
 # 3. Own source files carry a header whose year range reaches the file's last commit
+# Files declared as third-party overrides in REUSE.toml keep their upstream notice.
+with open("REUSE.toml", "rb") as fh:
+    annotations = tomllib.load(fh).get("annotations", [])
+third_party = [p for a in annotations if a.get("precedence") == "override" for p in ([a["path"]] if isinstance(a["path"], str) else a["path"])]
 files = subprocess.check_output(["git", "ls-files", *SOURCE_GLOBS], text=True).split()
 for f in files:
+    if any(fnmatch.fnmatch(f, p) for p in third_party):
+        continue
     head = Path(f).read_text(encoding="utf-8", errors="replace")[:1024]
     m = HEADER_RE.search(head)
     if not m:

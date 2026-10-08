@@ -1,0 +1,1 @@
+gst-plugin/tests/test_data/*.mp4 filter=lfs diff=lfs merge=lfs -text
